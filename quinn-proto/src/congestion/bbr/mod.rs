@@ -502,6 +502,8 @@ impl Controller for Bbr {
             pacing_rate: Some(self.pacing_rate * 8),
             bandwidth_estimate: (bandwidth_estimate != 0)
                 .then(|| bandwidth_estimate.saturating_mul(8)),
+            pacing_rate: Some(self.pacing_rate),
+            send_quantum: None,
         }
     }
 
