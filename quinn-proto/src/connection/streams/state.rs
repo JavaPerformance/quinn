@@ -757,7 +757,19 @@ impl StreamsState {
 
     /// Handle increase to connection-level flow control limit
     pub(crate) fn received_max_data(&mut self, n: VarInt) {
-        self.max_data = self.max_data.max(n.into());
+        let new_val: u64 = n.into();
+        let old_val = self.max_data;
+        self.max_data = self.max_data.max(new_val);
+        if new_val > old_val {
+            send_path_trace!(
+                crate::send_path_trace::SendPathEvent::MaxDataReceived,
+                0,
+                new_val,
+                old_val,
+                self.data_sent,
+                new_val.saturating_sub(self.data_sent)
+            );
+        }
     }
 
     pub(crate) fn received_max_stream_data(

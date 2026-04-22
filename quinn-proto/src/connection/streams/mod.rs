@@ -256,6 +256,14 @@ impl<'a> SendStream<'a> {
                 stream = %self.id, max_data = self.state.max_data, data_sent = self.state.data_sent,
                 "write blocked by connection-level flow control or send window"
             );
+            send_path_trace!(
+                crate::send_path_trace::SendPathEvent::WriteBlocked,
+                0,
+                self.state.max_data,
+                self.state.data_sent,
+                self.state.unacked_data,
+                self.state.send_window
+            );
             if !stream.connection_blocked {
                 stream.connection_blocked = true;
                 self.state.connection_blocked.push(self.id);

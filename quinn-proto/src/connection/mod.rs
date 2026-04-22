@@ -575,6 +575,14 @@ impl Connection {
                 // Is 1 more datagram allowed?
                 if num_datagrams >= max_datagrams {
                     // No more datagrams allowed
+                    send_path_trace!(
+                        crate::send_path_trace::SendPathEvent::DatagramCapReached,
+                        crate::send_path_trace::PollTransmitExitReason::DatagramCap as u8,
+                        num_datagrams as u64,
+                        max_datagrams as u64,
+                        self.path.in_flight.bytes,
+                        self.path.congestion.window()
+                    );
                     break;
                 }
 
@@ -610,6 +618,14 @@ impl Connection {
                         // We continue instead of breaking here in order to avoid
                         // blocking loss probes queued for higher spaces.
                         trace!("blocked by congestion control");
+                        send_path_trace!(
+                            crate::send_path_trace::SendPathEvent::CongestionBlocked,
+                            crate::send_path_trace::PollTransmitExitReason::CongestionBlocked as u8,
+                            self.path.in_flight.bytes,
+                            self.path.congestion.window(),
+                            bytes_to_send,
+                            num_datagrams as u64
+                        );
                         continue;
                     }
 
@@ -629,6 +645,14 @@ impl Connection {
                         // Loss probes should be subject to pacing, even though
                         // they are not congestion controlled.
                         trace!("blocked by pacing");
+                        send_path_trace!(
+                            crate::send_path_trace::SendPathEvent::PacingBlocked,
+                            crate::send_path_trace::PollTransmitExitReason::PacingBlocked as u8,
+                            delay.saturating_duration_since(now).as_nanos() as u64,
+                            self.path.in_flight.bytes,
+                            self.path.congestion.window(),
+                            num_datagrams as u64
+                        );
                         break;
                     }
                 }

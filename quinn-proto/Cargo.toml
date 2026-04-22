@@ -35,11 +35,19 @@ tracing-log = ["tracing/log"]
 rustls-log = ["rustls?/logging"]
 # Enable qlog support
 qlog = ["dep:qlog"]
+# Enable binary send-path tracing for diagnosing throughput ceilings.
+# When disabled, instrumentation call sites compile to nothing.
+send-path-trace = []
 
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
 
 __rustls-post-quantum-test =  []
+
+[[bin]]
+name = "quinn-trace-decode"
+path = "src/bin/quinn_trace_decode.rs"
+required-features = []
 
 [dependencies]
 arbitrary = { workspace = true, optional = true }
