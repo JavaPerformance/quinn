@@ -42,6 +42,22 @@ mod bloom_token_log;
 #[cfg(feature = "bloom")]
 pub use bloom_token_log::BloomTokenLog;
 
+/// Lightweight binary send-path trace (enabled via `send-path-trace` feature).
+///
+/// When the feature is disabled, the `send_path_trace!` macro compiles to nothing.
+/// The module is always present so that instrumentation call sites can reference
+/// the event/reason enums without cfg guards.
+pub mod send_path_trace;
+
+/// Record a send-path trace event. Compiles to nothing without `send-path-trace` feature.
+#[macro_export]
+macro_rules! send_path_trace {
+    ($event:expr, $reason:expr, $v0:expr, $v1:expr, $v2:expr, $v3:expr) => {
+        #[cfg(feature = "send-path-trace")]
+        $crate::send_path_trace::record($event, $reason, $v0, $v1, $v2, $v3);
+    };
+}
+
 mod connection;
 pub use crate::connection::{
     Chunk, Chunks, ClosedStream, Connection, ConnectionError, ConnectionStats, Datagrams, Event,
