@@ -391,6 +391,7 @@ async fn zero_rtt() {
     let msg = stream.read_to_end(usize::MAX).await.expect("read_to_end");
     assert_eq!(msg, MSG0);
     connection.authenticated().await.expect("connected");
+    assert!(connection.zero_rtt_accepted().await.expect("0-RTT outcome"));
 
     // Ensure 0-RTT was accepted
     stream_0rtt.stopped().await.expect("0-RTT stopped");
