@@ -84,8 +84,8 @@ pub use streams::StreamsState;
 #[cfg(not(fuzzing))]
 use streams::StreamsState;
 pub use streams::{
-    Chunks, ClosedStream, FinishError, ReadError, ReadableError, RecvStream, SendStream,
-    ShouldTransmit, StreamEvent, Streams, WriteError, Written,
+    Chunks, ClosedStream, FinishError, FlowControlStats, ReadError, ReadableError, RecvStream,
+    SendStream, ShouldTransmit, StreamEvent, Streams, WriteError, Written,
 };
 
 mod timer;
@@ -1275,6 +1275,7 @@ impl Connection {
         stats.path.latest_rtt = self.path.rtt.latest();
         stats.path.rtt_variance = self.path.rtt.variance();
         stats.path.pto_count = self.pto_count;
+        stats.flow_control = self.streams.flow_control_stats();
 
         stats
     }

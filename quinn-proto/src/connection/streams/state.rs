@@ -20,6 +20,28 @@ use crate::{
     transport_parameters::TransportParameters,
 };
 
+/// Snapshot of connection-level flow-control utilization.
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct FlowControlStats {
+    /// Remaining connection-level credit advertised by the peer
+    pub send_credit_remaining: u64,
+    /// Remaining connection-level credit advertised to the peer
+    pub recv_credit_remaining: u64,
+    /// Number of streams waiting for connection-level send credit
+    pub streams_blocked_by_conn_fc: u64,
+    /// Connection-level send limit advertised by the peer
+    pub peer_max_data: u64,
+    /// Sum of current offsets across all send streams
+    pub data_sent: u64,
+    /// Total quantity of unacknowledged outgoing data
+    pub unacked_data: u64,
+    /// Configured upper bound for unacknowledged outgoing data
+    pub send_window: u64,
+    /// Bytes currently writable after applying peer credit and the local send window
+    pub write_limit: u64,
+}
+
 /// Wrapper around `Recv` that facilitates reusing `Recv` instances
 #[derive(Debug)]
 pub(super) enum StreamRecv {
@@ -892,6 +914,20 @@ impl StreamsState {
         expanded
     }
 
+    /// Return a point-in-time snapshot of connection-level flow control.
+    pub(crate) fn flow_control_stats(&self) -> FlowControlStats {
+        FlowControlStats {
+            send_credit_remaining: self.max_data.saturating_sub(self.data_sent),
+            recv_credit_remaining: self.local_max_data.saturating_sub(self.data_recvd),
+            streams_blocked_by_conn_fc: self.connection_blocked.len() as u64,
+            peer_max_data: self.max_data,
+            data_sent: self.data_sent,
+            unacked_data: self.unacked_data,
+            send_window: self.send_window,
+            write_limit: self.write_limit(),
+        }
+    }
+
     pub(super) fn insert(&mut self, remote: bool, id: StreamId) {
         let bi = id.dir() == Dir::Bi;
         // bidirectional OR (unidirectional AND NOT remote)
@@ -1010,6 +1046,34 @@ mod tests {
             (1024 * 1024u32).into(),
             (1024 * 1024u32).into(),
         )
+    }
+
+    #[test]
+    fn flow_control_stats_snapshot() {
+        let mut state = make(Side::Client);
+        state.max_data = 100;
+        state.data_sent = 40;
+        state.local_max_data = 200;
+        state.data_recvd = 50;
+        state.unacked_data = 10;
+        state.send_window = 80;
+        state
+            .connection_blocked
+            .push(StreamId::new(Side::Client, Dir::Uni, 0));
+
+        assert_eq!(
+            state.flow_control_stats(),
+            FlowControlStats {
+                send_credit_remaining: 60,
+                recv_credit_remaining: 150,
+                streams_blocked_by_conn_fc: 1,
+                peer_max_data: 100,
+                data_sent: 40,
+                unacked_data: 10,
+                send_window: 80,
+                write_limit: 60,
+            }
+        );
     }
 
     #[test]

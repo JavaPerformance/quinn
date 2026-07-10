@@ -1,5 +1,6 @@
 //! Connection statistics
 
+use super::FlowControlStats;
 use crate::{Dir, Duration, frame::Frame};
 
 /// Statistics about UDP datagrams transmitted or received on a connection
@@ -187,4 +188,6 @@ pub struct ConnectionStats {
     pub frame_rx: FrameStats,
     /// Statistics related to the current transmission path
     pub path: PathStats,
+    /// Connection-level flow-control utilization
+    pub flow_control: FlowControlStats,
 }
