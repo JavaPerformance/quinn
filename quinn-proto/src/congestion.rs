@@ -5,10 +5,12 @@ use crate::{Duration, Instant};
 use std::any::Any;
 use std::sync::Arc;
 
+mod bbr2;
 mod bbr3;
 mod cubic;
 mod new_reno;
 
+pub use bbr2::{Bbr, BbrConfig, BbrV2Config};
 pub use bbr3::{Bbr3, Bbr3Config};
 pub use cubic::{Cubic, CubicConfig};
 pub use new_reno::{NewReno, NewRenoConfig};
