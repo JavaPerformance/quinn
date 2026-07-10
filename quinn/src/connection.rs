@@ -1070,10 +1070,16 @@ impl State {
         let now = self.runtime.now();
         let mut transmits = 0;
 
+        let transmit_budget = if self.inner.bulk_transmit_mode() {
+            self.inner.bulk_transmit_datagrams()
+        } else {
+            self.inner.max_transmit_datagrams()
+        };
+
         let max_datagrams = self
             .sender
             .max_transmit_segments()
-            .min(MAX_TRANSMIT_SEGMENTS);
+            .min(self.inner.max_transmit_segments());
 
         loop {
             // Retry the last transmit, or get a new one.
@@ -1112,7 +1118,7 @@ impl State {
                 Poll::Ready(Ok(())) => {}
             }
 
-            if transmits >= MAX_TRANSMIT_DATAGRAMS {
+            if transmits >= transmit_budget {
                 // TODO: What isn't ideal here yet is that if we don't poll all
                 // datagrams that could be sent we don't go into the `app_limited`
                 // state and CWND continues to grow until we get here the next time.
@@ -1367,16 +1373,3 @@ pub enum SendDatagramError {
     #[error("connection lost")]
     ConnectionLost(#[from] ConnectionError),
 }
-
-/// The maximum amount of datagrams which will be produced in a single `drive_transmit` call
-///
-/// This limits the amount of CPU resources consumed by datagram generation,
-/// and allows other tasks (like receiving ACKs) to run in between.
-const MAX_TRANSMIT_DATAGRAMS: usize = 20;
-
-/// The maximum amount of datagrams that are sent in a single transmit
-///
-/// This can be lower than the maximum platform capabilities, to avoid excessive
-/// memory allocations when calling `poll_transmit()`. Benchmarks have shown
-/// that numbers around 10 are a good compromise.
-const MAX_TRANSMIT_SEGMENTS: usize = 10;

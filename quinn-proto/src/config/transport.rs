@@ -56,6 +56,11 @@ pub struct TransportConfig {
 
     pub(crate) enable_segmentation_offload: bool,
 
+    pub(crate) max_transmit_segments: usize,
+    pub(crate) max_transmit_datagrams: usize,
+    pub(crate) bulk_transmit_mode: bool,
+    pub(crate) bulk_transmit_datagrams: usize,
+
     pub(crate) qlog_sink: QlogSink,
 }
 
@@ -351,6 +356,37 @@ impl TransportConfig {
         self
     }
 
+    /// Maximum GSO segments produced in one transmit operation.
+    ///
+    /// The effective value is also bounded by the platform socket. Defaults to 10.
+    pub fn max_transmit_segments(&mut self, value: usize) -> &mut Self {
+        self.max_transmit_segments = value.max(1);
+        self
+    }
+
+    /// Maximum datagrams generated in one normal connection-driver cycle.
+    ///
+    /// This bounds CPU work before yielding to ACK processing and other tasks. Defaults to 20.
+    pub fn max_transmit_datagrams(&mut self, value: usize) -> &mut Self {
+        self.max_transmit_datagrams = value.max(1);
+        self
+    }
+
+    /// Select the larger, still bounded, bulk transmit work budget.
+    pub fn bulk_transmit_mode(&mut self, enabled: bool) -> &mut Self {
+        self.bulk_transmit_mode = enabled;
+        self
+    }
+
+    /// Maximum datagrams generated in one bulk connection-driver cycle.
+    ///
+    /// Unlike the historical unbounded bulk loop, this always yields after finite work. Defaults
+    /// to 256 datagrams.
+    pub fn bulk_transmit_datagrams(&mut self, value: usize) -> &mut Self {
+        self.bulk_transmit_datagrams = value.max(1);
+        self
+    }
+
     /// qlog capture configuration to use for a particular connection
     #[cfg(feature = "qlog")]
     pub fn qlog_stream(&mut self, stream: Option<QlogStream>) -> &mut Self {
@@ -400,6 +436,11 @@ impl Default for TransportConfig {
 
             enable_segmentation_offload: true,
 
+            max_transmit_segments: 10,
+            max_transmit_datagrams: 20,
+            bulk_transmit_mode: false,
+            bulk_transmit_datagrams: 256,
+
             qlog_sink: QlogSink::default(),
         }
     }
@@ -434,6 +475,10 @@ impl fmt::Debug for TransportConfig {
                 deterministic_packet_numbers: _,
             congestion_controller_factory: _,
             enable_segmentation_offload,
+            max_transmit_segments,
+            max_transmit_datagrams,
+            bulk_transmit_mode,
+            bulk_transmit_datagrams,
             qlog_sink,
         } = self;
         let mut s = fmt.debug_struct("TransportConfig");
@@ -467,7 +512,11 @@ impl fmt::Debug for TransportConfig {
             .field("datagram_receive_buffer_size", datagram_receive_buffer_size)
             .field("datagram_send_buffer_size", datagram_send_buffer_size)
             // congestion_controller_factory not debug
-            .field("enable_segmentation_offload", enable_segmentation_offload);
+            .field("enable_segmentation_offload", enable_segmentation_offload)
+            .field("max_transmit_segments", max_transmit_segments)
+            .field("max_transmit_datagrams", max_transmit_datagrams)
+            .field("bulk_transmit_mode", bulk_transmit_mode)
+            .field("bulk_transmit_datagrams", bulk_transmit_datagrams);
         if cfg!(feature = "qlog") {
             s.field("qlog_stream", &qlog_sink.is_enabled());
         }
@@ -793,5 +842,28 @@ impl TryFrom<Duration> for IdleTimeout {
 impl fmt::Debug for IdleTimeout {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transmit_work_budgets_are_finite_and_nonzero() {
+        let mut config = TransportConfig::default();
+        assert_eq!(config.max_transmit_segments, 10);
+        assert_eq!(config.max_transmit_datagrams, 20);
+        assert_eq!(config.bulk_transmit_datagrams, 256);
+
+        config
+            .max_transmit_segments(0)
+            .max_transmit_datagrams(0)
+            .bulk_transmit_datagrams(0)
+            .bulk_transmit_mode(true);
+        assert_eq!(config.max_transmit_segments, 1);
+        assert_eq!(config.max_transmit_datagrams, 1);
+        assert_eq!(config.bulk_transmit_datagrams, 1);
+        assert!(config.bulk_transmit_mode);
     }
 }

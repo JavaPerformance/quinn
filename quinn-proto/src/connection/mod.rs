@@ -3795,6 +3795,26 @@ impl Connection {
         self.path.current_mtu()
     }
 
+    /// Configured cap on GSO segments generated in one transmit operation.
+    pub fn max_transmit_segments(&self) -> usize {
+        self.config.max_transmit_segments
+    }
+
+    /// Configured datagram budget for a normal connection-driver cycle.
+    pub fn max_transmit_datagrams(&self) -> usize {
+        self.config.max_transmit_datagrams
+    }
+
+    /// Whether this connection uses the larger bulk transmit work budget.
+    pub fn bulk_transmit_mode(&self) -> bool {
+        self.config.bulk_transmit_mode
+    }
+
+    /// Configured datagram budget for a bulk connection-driver cycle.
+    pub fn bulk_transmit_datagrams(&self) -> usize {
+        self.config.bulk_transmit_datagrams
+    }
+
     /// Size of non-frame data for a 1-RTT packet
     ///
     /// Quantifies space consumed by the QUIC header and AEAD tag. All other bytes in a packet are
