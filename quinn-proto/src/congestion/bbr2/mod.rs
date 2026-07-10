@@ -4,7 +4,7 @@
 //! BBRv2 mode based on the IETF BBR congestion-control draft.
 
 use std::any::Any;
-use std::collections::VecDeque;
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -66,7 +66,7 @@ pub struct Bbr {
     bw_at_last_round: u64,
     round_wo_bw_gain: u64,
     ack_aggregation: AckAggregationState,
-    sent_packets: VecDeque<BbrSentPacket>,
+    sent_packets: BTreeMap<u64, BbrSentPacket>,
     delivered_bytes: u64,
     delivered_time: Option<Instant>,
     /// BBRv2 slow-moving inflight upper bound. In V1 this is always `u64::MAX`
@@ -136,7 +136,7 @@ impl Bbr {
             bw_at_last_round: 0,
             round_wo_bw_gain: 0,
             ack_aggregation: AckAggregationState::default(),
-            sent_packets: VecDeque::new(),
+            sent_packets: BTreeMap::new(),
             delivered_bytes: 0,
             delivered_time: None,
             inflight_hi: u64::MAX,
@@ -252,31 +252,29 @@ impl Bbr {
     }
 
     fn remember_sent_packet(&mut self, packet_number: u64, tx_in_flight: u64, now: Instant) {
-        self.sent_packets.push_back(BbrSentPacket {
+        self.sent_packets.insert(
             packet_number,
-            round_count: self.round_count,
-            tx_in_flight,
-            sent_time: now,
-            delivered_bytes_at_send: self.delivered_bytes,
-            delivered_time_at_send: self.delivered_time.unwrap_or(now),
-        });
+            BbrSentPacket {
+                packet_number,
+                round_count: self.round_count,
+                tx_in_flight,
+                sent_time: now,
+                delivered_bytes_at_send: self.delivered_bytes,
+                delivered_time_at_send: self.delivered_time.unwrap_or(now),
+            },
+        );
 
         while self.sent_packets.len() > self.sent_packet_model_limit() {
-            self.sent_packets.pop_front();
+            self.sent_packets.pop_first();
         }
     }
 
     fn sent_packet_model(&self, packet_number: u64) -> Option<BbrSentPacket> {
-        self.sent_packets
-            .iter()
-            .rev()
-            .find(|packet| packet.packet_number == packet_number)
-            .copied()
+        self.sent_packets.get(&packet_number).copied()
     }
 
     fn prune_sent_packet_model(&mut self, packet_number: u64) {
-        self.sent_packets
-            .retain(|packet| packet.packet_number != packet_number);
+        self.sent_packets.remove(&packet_number);
     }
 
     fn bbrv2_delivery_rate_sample(
