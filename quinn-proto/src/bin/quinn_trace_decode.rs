@@ -61,7 +61,8 @@ fn main() {
 
     let mut file = std::fs::File::open(&path).expect("failed to open trace file");
     let mut buf = Vec::new();
-    file.read_to_end(&mut buf).expect("failed to read trace file");
+    file.read_to_end(&mut buf)
+        .expect("failed to read trace file");
 
     // Parse header
     if buf.len() < 32 {
@@ -137,8 +138,15 @@ fn main() {
     eprintln!("\n--- Summary ---");
     eprintln!("  WriteBlocked events    : {write_blocked_count}");
     eprintln!("  MaxDataReceived events : {max_data_received_count}");
-    eprintln!("  Max peer_max_data      : {} bytes ({:.2} MiB)", max_peer_max_data, max_peer_max_data as f64 / (1024.0 * 1024.0));
-    eprintln!("  PacingBlocked total    : {pacing_blocked_total_ns} ns ({:.3} ms)", pacing_blocked_total_ns as f64 / 1_000_000.0);
+    eprintln!(
+        "  Max peer_max_data      : {} bytes ({:.2} MiB)",
+        max_peer_max_data,
+        max_peer_max_data as f64 / (1024.0 * 1024.0)
+    );
+    eprintln!(
+        "  PacingBlocked total    : {pacing_blocked_total_ns} ns ({:.3} ms)",
+        pacing_blocked_total_ns as f64 / 1_000_000.0
+    );
 
     if summary_only {
         return;
