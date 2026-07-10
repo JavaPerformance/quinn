@@ -15,15 +15,19 @@ use tracing::warn;
 /// <https://tools.ietf.org/html/draft-ietf-quic-recovery-34#section-7.7>
 pub(super) struct Pacer {
     capacity: u64,
+    fallback_capacity: u64,
     last_window: u64,
     last_mtu: u16,
     tokens: u64,
     max_bytes_per_second: Option<u64>,
+    max_burst_datagrams: u64,
+    burst_interval_nanos: u64,
     prev: Instant,
 }
 
 impl Pacer {
     /// Obtains a new [`Pacer`].
+    #[cfg(test)]
     pub(super) fn new(
         smoothed_rtt: Duration,
         window: u64,
@@ -31,14 +35,46 @@ impl Pacer {
         max_bytes_per_second: Option<u64>,
         now: Instant,
     ) -> Self {
+        Self::new_with_burst_config(
+            smoothed_rtt,
+            window,
+            mtu,
+            max_bytes_per_second,
+            MAX_BURST_SIZE,
+            TARGET_BURST_INTERVAL.as_nanos() as u64,
+            now,
+        )
+    }
+
+    /// Construct a pacer with an application-configured fallback burst policy.
+    pub(super) fn new_with_burst_config(
+        smoothed_rtt: Duration,
+        window: u64,
+        mtu: u16,
+        max_bytes_per_second: Option<u64>,
+        max_burst_datagrams: u64,
+        burst_interval_nanos: u64,
+        now: Instant,
+    ) -> Self {
         let window = rate_limited_window(smoothed_rtt, window, max_bytes_per_second);
-        let capacity = optimal_capacity(smoothed_rtt, window, mtu);
+        let max_burst_datagrams = max_burst_datagrams.max(1);
+        let burst_interval_nanos = burst_interval_nanos.max(1);
+        let capacity = optimal_capacity(
+            smoothed_rtt,
+            window,
+            mtu,
+            max_burst_datagrams,
+            burst_interval_nanos,
+        );
         Self {
             capacity,
+            fallback_capacity: capacity,
             last_window: window,
             last_mtu: mtu,
             tokens: capacity,
             max_bytes_per_second,
+            max_burst_datagrams,
+            burst_interval_nanos,
             prev: now,
         }
     }
@@ -46,6 +82,14 @@ impl Pacer {
     /// Obtains the `max_bytes_per_second` used when this [`Pacer`] was constructed.
     pub(crate) fn max_bytes_per_second(&self) -> Option<u64> {
         self.max_bytes_per_second
+    }
+
+    pub(crate) fn max_burst_datagrams(&self) -> u64 {
+        self.max_burst_datagrams
+    }
+
+    pub(crate) fn burst_interval_nanos(&self) -> u64 {
+        self.burst_interval_nanos
     }
 
     /// Record that a packet has been transmitted.
@@ -85,17 +129,24 @@ impl Pacer {
 
         let window = rate_limited_window(smoothed_rtt, window, self.max_bytes_per_second);
         if window != self.last_window || mtu != self.last_mtu {
-            self.capacity = optimal_capacity(smoothed_rtt, window, mtu);
-
-            // here we cap the number of bytes sent at once during a burst
-            self.tokens = self.capacity.min(self.tokens);
+            self.fallback_capacity = optimal_capacity(
+                smoothed_rtt,
+                window,
+                mtu,
+                self.max_burst_datagrams,
+                self.burst_interval_nanos,
+            );
             self.last_window = window;
             self.last_mtu = mtu;
         }
 
-        if let Some(capacity) = controller_metrics.send_quantum {
+        let configured_ceiling = self.max_burst_datagrams.saturating_mul(u64::from(mtu));
+        let capacity = controller_metrics
+            .send_quantum
+            .map(|quantum| quantum.clamp(u64::from(mtu), configured_ceiling))
+            .unwrap_or(self.fallback_capacity);
+        if capacity != self.capacity {
             self.capacity = capacity;
-            // here we cap the number of bytes sent at once during a burst
             self.tokens = self.capacity.min(self.tokens);
         }
 
@@ -170,11 +221,17 @@ impl Pacer {
 /// tokens for the extra-elapsed time can be stored.
 ///
 /// Too long burst intervals make pacing less effective.
-fn optimal_capacity(smoothed_rtt: Duration, window: u64, mtu: u16) -> u64 {
+fn optimal_capacity(
+    smoothed_rtt: Duration,
+    window: u64,
+    mtu: u16,
+    max_burst_datagrams: u64,
+    burst_interval_nanos: u64,
+) -> u64 {
     let rtt = smoothed_rtt.as_nanos().max(1);
     let mtu = u64::from(mtu);
 
-    let target_capacity = ((window as u128 * TARGET_BURST_INTERVAL.as_nanos()) / rtt) as u64;
+    let target_capacity = ((window as u128 * u128::from(burst_interval_nanos)) / rtt) as u64;
     // Never restrict capacity below one MTU.
     let max_capacity = Ord::max(
         ((window as u128 * MAX_BURST_INTERVAL.as_nanos()) / rtt) as u64,
@@ -186,7 +243,10 @@ fn optimal_capacity(smoothed_rtt: Duration, window: u64, mtu: u16) -> u64 {
     // worth of traffic.
     Ord::min(
         max_capacity,
-        target_capacity.clamp(MIN_BURST_SIZE * mtu, MAX_BURST_SIZE * mtu),
+        target_capacity.clamp(
+            MIN_BURST_SIZE.min(max_burst_datagrams) * mtu,
+            max_burst_datagrams * mtu,
+        ),
     )
 }
 
@@ -212,6 +272,7 @@ fn rate_limited_window(
 }
 
 /// Period of traffic to batch together on a reasonably fast connection
+#[cfg(test)]
 const TARGET_BURST_INTERVAL: Duration = Duration::from_millis(2);
 
 /// Maximum period of traffic to batch together on a slow connection
@@ -224,6 +285,7 @@ const MAX_BURST_INTERVAL: Duration = Duration::from_millis(10);
 const MIN_BURST_SIZE: u64 = 10;
 
 /// Creating 256 packets took 1ms in a benchmark, so larger bursts don't make sense.
+#[cfg(test)]
 const MAX_BURST_SIZE: u64 = 256;
 
 #[cfg(test)]
@@ -522,6 +584,22 @@ mod tests {
         let mut pacer = Pacer::new(rtt, window, mtu, None, now);
         pacer.delay(rtt, mtu as u64, mtu, window * 2, now, &controller_metrics);
         assert_eq!(pacer.capacity, 20000);
+    }
+
+    #[test]
+    fn configured_burst_ceiling_bounds_controller_quantum() {
+        let window = 2_000_000;
+        let mtu = 1500;
+        let rtt = Duration::from_millis(50);
+        let now = Instant::now();
+        let controller_metrics = ControllerMetrics {
+            send_quantum: Some(20_000),
+            ..Default::default()
+        };
+        let mut pacer = Pacer::new_with_burst_config(rtt, window, mtu, None, 4, 2_000_000, now);
+
+        pacer.delay(rtt, u64::from(mtu), mtu, window, now, &controller_metrics);
+        assert_eq!(pacer.capacity, 4 * u64::from(mtu));
     }
 
     #[test]

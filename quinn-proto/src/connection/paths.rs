@@ -71,11 +71,13 @@ impl PathData {
             remote,
             rtt: RttEstimator::new(config.initial_rtt),
             sending_ecn: true,
-            pacing: Pacer::new(
+            pacing: Pacer::new_with_burst_config(
                 config.initial_rtt,
                 congestion.initial_window(),
                 config.get_initial_mtu(),
                 config.max_outgoing_bytes_per_second,
+                config.max_pacing_burst_size,
+                config.pacing_burst_interval_nanos,
                 now,
             ),
             congestion,
@@ -119,11 +121,13 @@ impl PathData {
         Self {
             remote,
             rtt: prev.rtt,
-            pacing: Pacer::new(
+            pacing: Pacer::new_with_burst_config(
                 smoothed_rtt,
                 congestion.window(),
                 prev.current_mtu(),
                 prev.pacing.max_bytes_per_second(),
+                prev.pacing.max_burst_datagrams(),
+                prev.pacing.burst_interval_nanos(),
                 now,
             ),
             sending_ecn: true,
