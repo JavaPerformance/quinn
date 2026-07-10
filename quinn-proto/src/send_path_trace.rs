@@ -139,14 +139,7 @@ mod runtime {
 
     /// Record a trace event. Lock-free, no heap allocation.
     #[inline(always)]
-    pub fn record(
-        event: SendPathEvent,
-        reason: u8,
-        val0: u64,
-        val1: u64,
-        val2: u64,
-        val3: u64,
-    ) {
+    pub fn record(event: SendPathEvent, reason: u8, val0: u64, val1: u64, val2: u64, val3: u64) {
         if INITIALIZED.load(Ordering::Relaxed) != 1 {
             return;
         }
@@ -189,7 +182,11 @@ mod runtime {
         let state = unsafe { TRACE.as_ref().unwrap_unchecked() };
         let total = state.total_written.load(Ordering::Relaxed);
         let wrapped = total as usize > RING_CAPACITY;
-        let count = if wrapped { RING_CAPACITY } else { total as usize };
+        let count = if wrapped {
+            RING_CAPACITY
+        } else {
+            total as usize
+        };
         let start_slot = if wrapped {
             state.cursor.load(Ordering::Relaxed) & RING_MASK
         } else {
@@ -209,10 +206,7 @@ mod runtime {
             let slot = (start_slot + i) & RING_MASK;
             let record = unsafe { &*state.ring.as_ptr().add(slot) };
             let bytes: &[u8] = unsafe {
-                std::slice::from_raw_parts(
-                    record as *const TraceRecord as *const u8,
-                    RECORD_SIZE,
-                )
+                std::slice::from_raw_parts(record as *const TraceRecord as *const u8, RECORD_SIZE)
             };
             file.write_all(bytes)?;
         }
