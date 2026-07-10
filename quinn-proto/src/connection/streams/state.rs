@@ -914,6 +914,22 @@ impl StreamsState {
         expanded
     }
 
+    /// Increase the receive window used for each stream.
+    ///
+    /// The new value applies to streams opened after this call and to existing streams on their
+    /// next natural flow-control update. It does not immediately queue `MAX_STREAM_DATA` frames for
+    /// idle streams.
+    ///
+    /// QUIC cannot revoke credit that was already advertised, so values at or below the current
+    /// window are ignored. Returns whether the window increased.
+    pub(crate) fn set_stream_receive_window(&mut self, window: u64) -> bool {
+        if window <= self.stream_receive_window {
+            return false;
+        }
+        self.stream_receive_window = window;
+        true
+    }
+
     /// Return a point-in-time snapshot of connection-level flow control.
     pub(crate) fn flow_control_stats(&self) -> FlowControlStats {
         FlowControlStats {
@@ -1074,6 +1090,19 @@ mod tests {
                 write_limit: 60,
             }
         );
+    }
+
+    #[test]
+    fn stream_receive_window_only_grows() {
+        let mut state = make(Side::Client);
+        let initial = state.stream_receive_window;
+
+        assert!(!state.set_stream_receive_window(initial));
+        assert!(!state.set_stream_receive_window(initial / 2));
+        assert_eq!(state.stream_receive_window, initial);
+
+        assert!(state.set_stream_receive_window(initial * 2));
+        assert_eq!(state.stream_receive_window, initial * 2);
     }
 
     #[test]

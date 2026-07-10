@@ -1431,6 +1431,15 @@ impl Connection {
         self.streams.set_send_window(send_window);
     }
 
+    /// Increase the per-stream receive window at runtime.
+    ///
+    /// See [`TransportConfig::stream_receive_window()`]. QUIC cannot revoke previously advertised
+    /// `MAX_STREAM_DATA` limits, so values at or below the current window are ignored. Existing
+    /// streams observe an increased window on their next natural flow-control update.
+    pub fn set_stream_receive_window(&mut self, window: VarInt) -> bool {
+        self.streams.set_stream_receive_window(window.into())
+    }
+
     /// See [`TransportConfig::receive_window()`]
     pub fn set_receive_window(&mut self, receive_window: VarInt) {
         if self.streams.set_receive_window(receive_window) {

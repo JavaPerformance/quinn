@@ -696,6 +696,21 @@ impl Connection {
         conn.wake();
     }
 
+    /// Increase the per-stream receive window at runtime.
+    ///
+    /// See [`proto::TransportConfig::stream_receive_window()`]. QUIC cannot revoke previously
+    /// advertised `MAX_STREAM_DATA` limits, so values at or below the current window are ignored.
+    /// Existing streams observe an increased window on their next natural flow-control update.
+    /// Returns whether the window increased.
+    pub fn set_stream_receive_window(&self, window: VarInt) -> bool {
+        let mut conn = self.0.state.lock("set_stream_receive_window");
+        let expanded = conn.inner.set_stream_receive_window(window);
+        if expanded {
+            conn.wake();
+        }
+        expanded
+    }
+
     /// See [`proto::TransportConfig::receive_window()`]
     pub fn set_receive_window(&self, receive_window: VarInt) {
         let mut conn = self.0.state.lock("set_receive_window");
