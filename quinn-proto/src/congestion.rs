@@ -15,6 +15,26 @@ pub use bbr3::{Bbr3, Bbr3Config};
 pub use cubic::{Cubic, CubicConfig};
 pub use new_reno::{NewReno, NewRenoConfig};
 
+/// Congestion signal reported by the QUIC recovery layer.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum CongestionEvent {
+    /// One or more ack-eliciting packets were declared lost.
+    Loss {
+        /// Largest lost packet number in this loss batch, when known.
+        largest_lost_packet_number: Option<u64>,
+        /// Ack-eliciting bytes declared lost in this loss batch.
+        lost_bytes: u64,
+    },
+    /// ECN congestion-experienced marks were reported by a peer.
+    Ecn {
+        /// Number of newly reported CE marks in the ACK's ECN counters.
+        ce_count: u64,
+        /// Largest packet number covered by the ACK carrying the counters.
+        largest_acked_packet_number: Option<u64>,
+    },
+}
+
 /// Common interface for different congestion controllers
 pub trait Controller: Send + Sync {
     /// One or more packets were just sent
@@ -52,22 +72,17 @@ pub trait Controller: Send + Sync {
     ) {
     }
 
-    /// Packets were deemed lost or marked congested
+    /// Packets were deemed lost or marked congested.
     ///
     /// `in_persistent_congestion` indicates whether all packets sent within the persistent
     /// congestion threshold period ending when the most recent packet in this batch was sent were
     /// lost.
-    /// `lost_bytes` indicates how many bytes were lost. This value will be 0 for ECN triggers.
-    /// `largest_lost` indicates the packet number of the packet with the highest packet number
-    /// in the congestion event.
     fn on_congestion_event(
         &mut self,
         now: Instant,
         sent: Instant,
+        event: CongestionEvent,
         is_persistent_congestion: bool,
-        is_ecn: bool,
-        lost_bytes: u64,
-        largest_lost: u64,
     );
 
     /// One packet was just lost

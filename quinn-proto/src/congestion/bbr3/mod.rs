@@ -9,7 +9,7 @@ use rand_pcg::Pcg32;
 
 use crate::RttEstimator;
 use crate::congestion::bbr3::max_filter::MaxFilter;
-use crate::congestion::{Controller, ControllerFactory, ControllerMetrics};
+use crate::congestion::{CongestionEvent, Controller, ControllerFactory, ControllerMetrics};
 use crate::{Duration, Instant};
 
 /// equivalent to BBR.MaxBwFilterLen <https://www.ietf.org/archive/id/draft-ietf-ccwg-bbr-05.html#section-2.10>
@@ -1571,23 +1571,32 @@ impl Controller for Bbr3 {
         &mut self,
         now: Instant,
         _sent: Instant,
+        event: CongestionEvent,
         is_persistent_congestion: bool,
-        is_ecn: bool,
-        lost_bytes: u64,
-        largest_lost: u64,
     ) {
-        // only process ecn here, regular packet loss is detected per packet in on_packet_lost.
-        if is_ecn {
-            self.lost += lost_bytes;
-            let p_index_result = self
-                .packets
-                .binary_search_by_key(&(largest_lost), |p| p.packet_number);
-            if let Ok(p_index) = p_index_result {
-                self.process_lost_packet(lost_bytes, p_index, now);
+        match event {
+            // Regular packet loss is processed per packet in `on_packet_lost`.
+            CongestionEvent::Loss { .. } => {}
+            CongestionEvent::Ecn {
+                ce_count,
+                largest_acked_packet_number,
+            } => {
+                // ECN feedback counts packets rather than bytes. Project each
+                // mark to the current SMSS for BBR's byte-based loss model.
+                let marked_bytes = ce_count.saturating_mul(self.smss);
+                self.lost = self.lost.saturating_add(marked_bytes);
+                if let Some(packet_number) = largest_acked_packet_number {
+                    let p_index_result = self
+                        .packets
+                        .binary_search_by_key(&packet_number, |p| p.packet_number);
+                    if let Ok(p_index) = p_index_result {
+                        self.process_lost_packet(marked_bytes, p_index, now);
+                    }
+                }
             }
-            if is_persistent_congestion {
-                self.cwnd = self.min_pipe_cwnd;
-            }
+        }
+        if is_persistent_congestion {
+            self.cwnd = self.min_pipe_cwnd;
         }
     }
 
@@ -1748,5 +1757,34 @@ mod test {
         bbr3.pick_probe_wait();
         assert_eq!(bbr3.rounds_since_bw_probe, 1);
         assert_eq!(bbr3.bw_probe_wait, Duration::from_millis(2570));
+    }
+
+    #[test]
+    fn congestion_event_accounts_for_ecn_and_persistent_loss() {
+        let now = Instant::now();
+        let mut bbr3 = Bbr3::new(Arc::new(Bbr3Config::default()), 2500);
+
+        bbr3.on_congestion_event(
+            now,
+            now,
+            CongestionEvent::Ecn {
+                ce_count: 3,
+                largest_acked_packet_number: None,
+            },
+            false,
+        );
+        assert_eq!(bbr3.lost, 3 * bbr3.smss);
+
+        bbr3.cwnd = bbr3.min_pipe_cwnd * 4;
+        bbr3.on_congestion_event(
+            now,
+            now,
+            CongestionEvent::Loss {
+                largest_lost_packet_number: Some(7),
+                lost_bytes: bbr3.smss,
+            },
+            true,
+        );
+        assert_eq!(bbr3.cwnd, bbr3.min_pipe_cwnd);
     }
 }
