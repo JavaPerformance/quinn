@@ -255,7 +255,6 @@ impl Bbr {
         self.sent_packets.insert(
             packet_number,
             BbrSentPacket {
-                packet_number,
                 round_count: self.round_count,
                 tx_in_flight,
                 sent_time: now,
@@ -1158,7 +1157,6 @@ pub(super) enum ProbeBwPhase {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct BbrSentPacket {
-    packet_number: u64,
     round_count: u64,
     tx_in_flight: u64,
     sent_time: Instant,
