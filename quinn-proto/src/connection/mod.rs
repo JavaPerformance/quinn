@@ -1660,16 +1660,17 @@ impl Connection {
                 // future attempts to use ECN on new paths.
                 self.spaces[space].ecn_feedback = frame::EcnCounts::ZERO;
             }
-            Ok(false) => {}
-            Ok(true) => {
+            Ok(0) => {}
+            Ok(ce_count) => {
                 self.stats.path.congestion_events += 1;
                 self.path.congestion.on_congestion_event(
                     now,
                     largest_sent_time,
+                    crate::congestion::CongestionEvent::Ecn {
+                        ce_count,
+                        largest_acked_packet_number: Some(largest_sent),
+                    },
                     false,
-                    true,
-                    0,
-                    largest_sent,
                 );
             }
         }
@@ -1891,10 +1892,11 @@ impl Connection {
                 self.path.congestion.on_congestion_event(
                     now,
                     largest_lost_sent,
+                    crate::congestion::CongestionEvent::Loss {
+                        largest_lost_packet_number: Some(largest_lost),
+                        lost_bytes: size_of_lost_packets,
+                    },
                     in_persistent_congestion,
-                    false,
-                    size_of_lost_packets,
-                    largest_lost,
                 );
             }
         }

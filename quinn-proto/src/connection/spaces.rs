@@ -174,12 +174,12 @@ impl PacketSpace {
         SendableFrames { acks, other }
     }
 
-    /// Verifies sanity of an ECN block and returns whether congestion was encountered.
+    /// Verifies an ECN block and returns the number of newly reported CE marks.
     pub(super) fn detect_ecn(
         &mut self,
         newly_acked: u64,
         ecn: frame::EcnCounts,
-    ) -> Result<bool, &'static str> {
+    ) -> Result<u64, &'static str> {
         let ect0_increase = ecn
             .ect0
             .checked_sub(self.ecn_feedback.ect0)
@@ -204,7 +204,7 @@ impl PacketSpace {
         // to count CE packets as CE or ECT0. Recording them as CE is more consistent and keeps the
         // congestion check obvious.
         self.ecn_feedback = ecn;
-        Ok(ce_increase != 0)
+        Ok(ce_increase)
     }
 
     /// Stop tracking sent packet `number`, and return what we knew about it
@@ -907,6 +907,34 @@ const MAX_ACK_BLOCKS: usize = 64;
 #[cfg(test)]
 mod test {
     use super::*;
+
+    #[test]
+    fn detect_ecn_preserves_exact_ce_count() {
+        let mut space = PacketSpace::new(Instant::now());
+
+        assert_eq!(
+            space.detect_ecn(
+                5,
+                frame::EcnCounts {
+                    ect0: 2,
+                    ect1: 0,
+                    ce: 3,
+                },
+            ),
+            Ok(3)
+        );
+        assert_eq!(
+            space.detect_ecn(
+                2,
+                frame::EcnCounts {
+                    ect0: 4,
+                    ect1: 0,
+                    ce: 3,
+                },
+            ),
+            Ok(0)
+        );
+    }
 
     #[test]
     fn sanity() {

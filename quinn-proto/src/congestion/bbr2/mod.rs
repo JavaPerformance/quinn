@@ -17,7 +17,7 @@ use crate::congestion::bbr2::min_max::MinMax;
 use crate::connection::RttEstimator;
 use crate::{Duration, Instant};
 
-use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
+use super::{BASE_DATAGRAM_SIZE, CongestionEvent, Controller, ControllerFactory};
 
 mod bw_estimation;
 mod min_max;
@@ -945,26 +945,31 @@ impl Controller for Bbr {
         &mut self,
         _now: Instant,
         _sent: Instant,
+        event: CongestionEvent,
         is_persistent_congestion: bool,
-        is_ecn: bool,
-        lost_bytes: u64,
-        largest_lost: u64,
     ) {
-        if is_ecn {
-            // The BBRv3 integration currently exposes only whether CE marks
-            // increased. A follow-up restores the exact CE count.
-            self.loss_state.record_ecn(1, is_persistent_congestion);
-            return;
+        match event {
+            CongestionEvent::Ecn { ce_count, .. } => {
+                self.loss_state
+                    .record_ecn(ce_count, is_persistent_congestion);
+            }
+            CongestionEvent::Loss {
+                largest_lost_packet_number,
+                lost_bytes,
+            } => {
+                let lost_model = largest_lost_packet_number
+                    .and_then(|packet_number| self.sent_packet_model(packet_number));
+                self.loss_state.record_loss(
+                    lost_bytes,
+                    is_persistent_congestion,
+                    lost_model.map(|packet| packet.round_count),
+                    lost_model.map(|packet| packet.tx_in_flight),
+                );
+                if let Some(packet_number) = largest_lost_packet_number {
+                    self.prune_sent_packet_model(packet_number);
+                }
+            }
         }
-
-        let lost_model = self.sent_packet_model(largest_lost);
-        self.loss_state.record_loss(
-            lost_bytes,
-            is_persistent_congestion,
-            lost_model.map(|packet| packet.round_count),
-            lost_model.map(|packet| packet.tx_in_flight),
-        );
-        self.prune_sent_packet_model(largest_lost);
     }
 
     fn on_packet_lost(&mut self, lost_bytes: u16, _packet_number: u64, _now: Instant) {
@@ -1587,7 +1592,15 @@ mod tests {
         bbr.probe_rtt_last_started_at = Some(now);
         bbr.remember_sent_packet(10, 900_000, now);
 
-        bbr.on_congestion_event(now, now, false, false, 4 * BASE_DATAGRAM_SIZE, 10);
+        bbr.on_congestion_event(
+            now,
+            now,
+            CongestionEvent::Loss {
+                largest_lost_packet_number: Some(10),
+                lost_bytes: 4 * BASE_DATAGRAM_SIZE,
+            },
+            false,
+        );
         ack_round_bytes(&mut bbr, now, 100 * BASE_DATAGRAM_SIZE);
         bbr.on_end_acks(now, 100_000, false, Some(11));
 
@@ -1631,6 +1644,29 @@ mod tests {
         let metrics = bbr.metrics();
         assert_eq!(metrics.pacing_rate, Some(12_345));
         assert_eq!(metrics.send_quantum, None);
+    }
+
+    #[test]
+    fn bbrv2_congestion_event_preserves_exact_ce_count() {
+        let mut bbr = Bbr::new_with_version(
+            Arc::new(BbrConfig::default()),
+            BASE_DATAGRAM_SIZE as u16,
+            BbrVersion::V2,
+        );
+        let now = Instant::now();
+
+        bbr.on_congestion_event(
+            now,
+            now,
+            CongestionEvent::Ecn {
+                ce_count: 7,
+                largest_acked_packet_number: Some(42),
+            },
+            false,
+        );
+
+        assert_eq!(bbr.loss_state.ecn_ce_count, 7);
+        assert_eq!(bbr.loss_state.round_ecn_ce_count, 7);
     }
 
     #[test]

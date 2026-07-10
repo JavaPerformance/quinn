@@ -2,7 +2,7 @@ use std::any::Any;
 use std::cmp;
 use std::sync::Arc;
 
-use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
+use super::{BASE_DATAGRAM_SIZE, CongestionEvent, Controller, ControllerFactory};
 use crate::connection::RttEstimator;
 use crate::{Duration, Instant};
 
@@ -185,10 +185,8 @@ impl Controller for Cubic {
         &mut self,
         now: Instant,
         sent: Instant,
+        event: CongestionEvent,
         is_persistent_congestion: bool,
-        is_ecn: bool,
-        _lost_bytes: u64,
-        _largest_lost: u64,
     ) {
         if self
             .state
@@ -200,7 +198,7 @@ impl Controller for Cubic {
         }
 
         // Save state in case this event ends up being spurious
-        if !is_ecn {
+        if !matches!(event, CongestionEvent::Ecn { .. }) {
             self.pre_congestion_state = Some(self.state.clone());
         }
 
@@ -322,7 +320,15 @@ mod tests {
         cubic.state.ssthresh = window;
         cubic.state.w_max = 12.0 * BASE_DATAGRAM_SIZE as f64;
 
-        cubic.on_congestion_event(now, now + Duration::from_millis(1), false, false, 0, 0);
+        cubic.on_congestion_event(
+            now,
+            now + Duration::from_millis(1),
+            CongestionEvent::Loss {
+                largest_lost_packet_number: Some(0),
+                lost_bytes: 0,
+            },
+            false,
+        );
 
         assert_eq!(cubic.state.w_max, window as f64 * (1.0 + BETA_CUBIC) / 2.0);
         assert_eq!(cubic.state.ssthresh, (window as f64 * BETA_CUBIC) as u64);

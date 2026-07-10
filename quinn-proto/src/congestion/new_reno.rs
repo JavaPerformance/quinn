@@ -1,7 +1,7 @@
 use std::any::Any;
 use std::sync::Arc;
 
-use super::{BASE_DATAGRAM_SIZE, Controller, ControllerFactory};
+use super::{BASE_DATAGRAM_SIZE, CongestionEvent, Controller, ControllerFactory};
 use crate::Instant;
 use crate::connection::RttEstimator;
 
@@ -87,10 +87,8 @@ impl Controller for NewReno {
         &mut self,
         now: Instant,
         sent: Instant,
+        _event: CongestionEvent,
         is_persistent_congestion: bool,
-        _is_ecn: bool,
-        _lost_bytes: u64,
-        _largest_lost: u64,
     ) {
         if sent <= self.recovery_start_time {
             return;
