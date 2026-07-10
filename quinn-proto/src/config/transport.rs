@@ -60,6 +60,8 @@ pub struct TransportConfig {
     pub(crate) max_transmit_datagrams: usize,
     pub(crate) bulk_transmit_mode: bool,
     pub(crate) bulk_transmit_datagrams: usize,
+    pub(crate) max_pacing_burst_size: u64,
+    pub(crate) pacing_burst_interval_nanos: u64,
 
     pub(crate) qlog_sink: QlogSink,
 }
@@ -387,6 +389,23 @@ impl TransportConfig {
         self
     }
 
+    /// Maximum datagrams represented by one pacer burst.
+    ///
+    /// For congestion controllers that provide a send quantum, this is a safety ceiling rather
+    /// than a replacement for the controller's decision. Defaults to 256 datagrams.
+    pub fn max_pacing_burst_size(&mut self, value: u64) -> &mut Self {
+        self.max_pacing_burst_size = value.max(1);
+        self
+    }
+
+    /// Target interval represented by a fallback pacer burst, in nanoseconds.
+    ///
+    /// Congestion controllers that provide a send quantum take precedence. Defaults to 2 ms.
+    pub fn pacing_burst_interval_nanos(&mut self, value: u64) -> &mut Self {
+        self.pacing_burst_interval_nanos = value.max(1);
+        self
+    }
+
     /// qlog capture configuration to use for a particular connection
     #[cfg(feature = "qlog")]
     pub fn qlog_stream(&mut self, stream: Option<QlogStream>) -> &mut Self {
@@ -440,6 +459,8 @@ impl Default for TransportConfig {
             max_transmit_datagrams: 20,
             bulk_transmit_mode: false,
             bulk_transmit_datagrams: 256,
+            max_pacing_burst_size: 256,
+            pacing_burst_interval_nanos: 2_000_000,
 
             qlog_sink: QlogSink::default(),
         }
@@ -479,6 +500,8 @@ impl fmt::Debug for TransportConfig {
             max_transmit_datagrams,
             bulk_transmit_mode,
             bulk_transmit_datagrams,
+            max_pacing_burst_size,
+            pacing_burst_interval_nanos,
             qlog_sink,
         } = self;
         let mut s = fmt.debug_struct("TransportConfig");
@@ -516,7 +539,9 @@ impl fmt::Debug for TransportConfig {
             .field("max_transmit_segments", max_transmit_segments)
             .field("max_transmit_datagrams", max_transmit_datagrams)
             .field("bulk_transmit_mode", bulk_transmit_mode)
-            .field("bulk_transmit_datagrams", bulk_transmit_datagrams);
+            .field("bulk_transmit_datagrams", bulk_transmit_datagrams)
+            .field("max_pacing_burst_size", max_pacing_burst_size)
+            .field("pacing_burst_interval_nanos", pacing_burst_interval_nanos);
         if cfg!(feature = "qlog") {
             s.field("qlog_stream", &qlog_sink.is_enabled());
         }
@@ -855,15 +880,21 @@ mod tests {
         assert_eq!(config.max_transmit_segments, 10);
         assert_eq!(config.max_transmit_datagrams, 20);
         assert_eq!(config.bulk_transmit_datagrams, 256);
+        assert_eq!(config.max_pacing_burst_size, 256);
+        assert_eq!(config.pacing_burst_interval_nanos, 2_000_000);
 
         config
             .max_transmit_segments(0)
             .max_transmit_datagrams(0)
             .bulk_transmit_datagrams(0)
-            .bulk_transmit_mode(true);
+            .bulk_transmit_mode(true)
+            .max_pacing_burst_size(0)
+            .pacing_burst_interval_nanos(0);
         assert_eq!(config.max_transmit_segments, 1);
         assert_eq!(config.max_transmit_datagrams, 1);
         assert_eq!(config.bulk_transmit_datagrams, 1);
         assert!(config.bulk_transmit_mode);
+        assert_eq!(config.max_pacing_burst_size, 1);
+        assert_eq!(config.pacing_burst_interval_nanos, 1);
     }
 }
