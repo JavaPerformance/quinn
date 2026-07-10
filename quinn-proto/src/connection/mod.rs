@@ -1343,10 +1343,16 @@ impl Connection {
     /// Returns connection statistics
     pub fn stats(&self) -> ConnectionStats {
         let mut stats = self.stats;
+        let controller_metrics = self.path.congestion.metrics();
         stats.path.rtt = self.path.rtt.get();
         stats.path.min_rtt = self.path.rtt.min();
-        stats.path.cwnd = self.path.congestion.window();
-        stats.path.bandwidth_estimate = self.path.congestion.metrics().bandwidth_estimate;
+        // One metrics() call feeds every field, upstream's included, rather
+        // than reading the controller twice by two different routes.
+        stats.path.cwnd = controller_metrics.congestion_window;
+        stats.path.ssthresh = controller_metrics.ssthresh;
+        stats.path.pacing_rate = controller_metrics.pacing_rate;
+        stats.path.send_quantum = controller_metrics.send_quantum;
+        stats.path.bandwidth_estimate = controller_metrics.bandwidth_estimate;
         stats.path.current_mtu = self.path.mtud.current_mtu();
         stats.path.bytes_in_flight = self.path.in_flight.bytes;
         stats.path.packets_in_flight = self.path.in_flight.ack_eliciting;
