@@ -1049,6 +1049,14 @@ pub struct BbrV2Config {
 }
 
 impl BbrV2Config {
+    /// Construct the conservative BBRv2 signal classifier without the full
+    /// long/short-term bound and ProbeBW phase model.
+    pub fn conservative() -> Self {
+        Self {
+            inner: BbrConfig::default(),
+        }
+    }
+
     /// Default limit on the amount of outstanding data in bytes.
     ///
     /// Recommended value: `min(10 * max_datagram_size, max(2 * max_datagram_size, 14720))`
@@ -1076,9 +1084,9 @@ impl BbrV2Config {
 
 impl Default for BbrV2Config {
     fn default() -> Self {
-        Self {
-            inner: BbrConfig::default(),
-        }
+        let mut config = Self::conservative();
+        config.full_model(true);
+        config
     }
 }
 
@@ -1443,7 +1451,7 @@ mod tests {
     }
 
     #[test]
-    fn bbrv2_config_builds_v2_controller() {
+    fn bbrv2_config_builds_full_v2_controller_by_default() {
         let controller =
             Arc::new(BbrV2Config::default()).build(Instant::now(), BASE_DATAGRAM_SIZE as u16);
         let bbr = controller
@@ -1452,13 +1460,12 @@ mod tests {
             .expect("BbrV2Config should build a Bbr controller");
 
         assert_eq!(bbr.version, BbrVersion::V2);
-        assert!(!bbr.config.bbrv2_experimental_inflight_hi_shrink);
+        assert!(bbr.config.bbrv2_experimental_inflight_hi_shrink);
     }
 
     #[test]
-    fn bbrv2_config_can_enable_full_model() {
-        let mut cfg = BbrV2Config::default();
-        cfg.full_model(true);
+    fn bbrv2_config_can_select_conservative_model() {
+        let cfg = BbrV2Config::conservative();
         let controller = Arc::new(cfg).build(Instant::now(), BASE_DATAGRAM_SIZE as u16);
         let bbr = controller
             .into_any()
@@ -1466,7 +1473,7 @@ mod tests {
             .expect("BbrV2Config should build a Bbr controller");
 
         assert_eq!(bbr.version, BbrVersion::V2);
-        assert!(bbr.config.bbrv2_experimental_inflight_hi_shrink);
+        assert!(!bbr.config.bbrv2_experimental_inflight_hi_shrink);
     }
 
     #[test]
