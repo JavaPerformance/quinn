@@ -607,6 +607,24 @@ impl Connection {
         conn.error.clone().map_or(Ok(()), Err)
     }
 
+    /// Wait for the handshake outcome and report whether outgoing 0-RTT data
+    /// was accepted by the peer.
+    ///
+    /// This is primarily useful for telemetry. Applications must still handle
+    /// [`ZeroRttRejected`](crate::WriteError::ZeroRttRejected) from stream operations,
+    /// because data sent before this future completes may need replay.
+    /// Incoming connections return `true` after authentication, matching the
+    /// 0.5-RTT semantics of [`Connecting::into_0rtt`]. A client connection that
+    /// did not attempt 0-RTT returns `false`.
+    pub async fn zero_rtt_accepted(&self) -> Result<bool, ConnectionError> {
+        self.authenticated().await?;
+        let conn = self.0.state.lock("zero_rtt_accepted");
+        if let Some(error) = &conn.error {
+            return Err(error.clone());
+        }
+        Ok(conn.inner.side().is_server() || conn.inner.accepted_0rtt())
+    }
+
     /// Parameters negotiated during the handshake
     ///
     /// Guaranteed to return `Some` on fully established connections or after
