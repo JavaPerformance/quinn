@@ -79,10 +79,6 @@ pub struct Bbr {
     inflight_lo: u64,
     /// BBRv2 short-term bandwidth upper bound, paired with `inflight_lo`.
     bw_lo: u64,
-    /// BBRv2 long-term bandwidth upper bound. This pairs with `inflight_hi`
-    /// and is raised cautiously during ProbeBW_UP when clean bandwidth samples
-    /// exceed the current cap.
-    bw_hi: u64,
     /// Approximate inflight level for the most recent congestion signal.
     inflight_latest: u64,
     /// Approximate bandwidth estimate for the most recent congestion signal.
@@ -146,7 +142,6 @@ impl Bbr {
             inflight_hi: u64::MAX,
             inflight_lo: u64::MAX,
             bw_lo: u64::MAX,
-            bw_hi: u64::MAX,
             inflight_latest: 0,
             bw_latest: 0,
             probe_up_acked: 0,
@@ -161,15 +156,12 @@ impl Bbr {
     /// congestion signal. V1 never calls this (its V1 `has_congestion_losses`
     /// result already reduces `recovery_window` directly).
     ///
-    /// `signal_inflight` should be the `in_flight` reported by the batch that
-    /// crossed the threshold, which approximates the inflight level we know
-    /// caused congestion in this path. We floor the new ceiling at `min_cwnd`
-    /// so a ceiling reduction never blocks all forward progress.
+    /// `signal_inflight` should be the flight size recorded when the triggering
+    /// packet was sent. Following BBRv2's upper-bound adaptation, preserve that
+    /// observed flight and use 70% of the model target only as a lower bound.
     fn shrink_inflight_hi_on_signal(&mut self, signal_inflight: u64) {
         debug_assert!(matches!(self.version, BbrVersion::V2));
-        // BBRv2 Beta = 0.7. Integer-math form: multiply by 7, divide by 10.
-        let reduced = signal_inflight.saturating_mul(7) / 10;
-        let candidate = reduced.max(self.bbrv2_inflight_hi_floor());
+        let candidate = signal_inflight.max(self.bbrv2_inflight_hi_loss_floor());
         // Never grow the ceiling in the loss handler; ProbeBW_UP grows it back
         // only when the capped inflight level is later utilized without another
         // congestion signal.
@@ -178,26 +170,22 @@ impl Bbr {
         self.probe_up_rounds = 0;
     }
 
-    fn shrink_bw_hi_on_signal(&mut self) {
-        debug_assert!(matches!(self.version, BbrVersion::V2));
-        let bw = self.max_bandwidth.get_estimate();
-        if bw == 0 {
-            return;
-        }
-        let reduced = bw.saturating_mul(7) / 10;
-        self.bw_hi = self.bw_hi.min(reduced.max(1));
-    }
-
     fn bbrv2_inflight_hi_floor(&self) -> u64 {
         // The draft's long-term inflight bound is model-based, not a starvation
         // lever. Do not let it fall below the current BDP estimate.
         self.get_target_cwnd(1.0).max(self.min_cwnd)
     }
 
+    fn bbrv2_inflight_hi_loss_floor(&self) -> u64 {
+        self.get_target_cwnd(1.0)
+            .saturating_mul(BBR2_BETA_NUMERATOR)
+            .saturating_div(BBR2_BETA_DENOMINATOR)
+            .max(self.min_cwnd)
+    }
+
     fn bbrv2_effective_bandwidth(&self) -> u64 {
         let mut bw = self.max_bandwidth.get_estimate();
         if matches!(self.version, BbrVersion::V2) {
-            bw = bw.min(self.bw_hi);
             if self.bw_lo != u64::MAX && self.bbrv2_uses_short_term_model() {
                 bw = bw.min(self.bw_lo);
             }
@@ -442,7 +430,6 @@ impl Bbr {
 
         if self.bbrv2_is_probing_bandwidth() && self.bw_probe_samples {
             self.shrink_inflight_hi_on_signal(in_flight);
-            self.shrink_bw_hi_on_signal();
             self.bw_probe_samples = false;
             if self.mode == Mode::ProbeBw && self.probe_bw_phase == ProbeBwPhase::Up {
                 self.bbrv2_start_probe_bw_down(now);
@@ -480,10 +467,6 @@ impl Bbr {
         }
 
         self.probe_up_acked = self.probe_up_acked.saturating_add(bytes_acked);
-        if self.bw_hi != u64::MAX && self.bw_latest > self.bw_hi {
-            self.bw_hi = self.bw_latest;
-        }
-
         let growth_packets = 1u64 << self.probe_up_rounds.saturating_sub(1).min(30);
         let probe_up_bytes = (self.cwnd / growth_packets).max(self.current_mtu);
         if self.probe_up_acked < probe_up_bytes {
@@ -1077,16 +1060,20 @@ impl BbrV2Config {
         self
     }
 
-    /// Enable the incomplete shrink-only `inflight_hi` response.
+    /// Enable the experimental full BBRv2 model.
     ///
-    /// This is intentionally disabled by default. Without the rest of the
-    /// BBRv2 recovery/growth model (`inflight_lo`, `bw_lo`, ProbeBW_UP), a
-    /// one-way `inflight_hi` ceiling can become a liveness trap on lossy paths.
-    /// Keep this off for normal `bbrv2` A/B tests unless explicitly isolating
-    /// that behavior.
-    pub fn experimental_inflight_hi_shrink(&mut self, enabled: bool) -> &mut Self {
+    /// This activates long- and short-term inflight bounds, the short-term
+    /// bandwidth bound, and the ProbeBW DOWN/CRUISE/REFILL/UP cycle. It remains
+    /// disabled by default while the full model is benchmarked against the
+    /// conservative BBRv2 signal classifier.
+    pub fn full_model(&mut self, enabled: bool) -> &mut Self {
         self.inner.bbrv2_experimental_inflight_hi_shrink = enabled;
         self
+    }
+
+    /// Backwards-compatible alias for [`Self::full_model`].
+    pub fn experimental_inflight_hi_shrink(&mut self, enabled: bool) -> &mut Self {
+        self.full_model(enabled)
     }
 }
 
@@ -1340,6 +1327,8 @@ const PACING_GAIN: [f32; 8] = [1.25, 0.75, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
 const BBR2_PROBE_DOWN_PACING_GAIN: f32 = 0.90;
 const BBR2_PROBE_UP_PACING_GAIN: f32 = 1.25;
 const BBR2_PROBE_UP_CWND_GAIN: f32 = 2.25;
+const BBR2_BETA_NUMERATOR: u64 = 7;
+const BBR2_BETA_DENOMINATOR: u64 = 10;
 
 const STARTUP_GROWTH_TARGET: f32 = 1.25;
 const ROUND_TRIPS_WITHOUT_GROWTH_BEFORE_EXITING_STARTUP: u8 = 3;
@@ -1471,9 +1460,9 @@ mod tests {
     }
 
     #[test]
-    fn bbrv2_config_can_enable_experimental_inflight_hi_shrink() {
+    fn bbrv2_config_can_enable_full_model() {
         let mut cfg = BbrV2Config::default();
-        cfg.experimental_inflight_hi_shrink(true);
+        cfg.full_model(true);
         let controller = Arc::new(cfg).build(Instant::now(), BASE_DATAGRAM_SIZE as u16);
         let bbr = controller
             .into_any()
@@ -1505,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn bbrv2_experimental_flag_shrinks_inflight_hi_on_congestion_signal() {
+    fn bbrv2_full_model_adapts_inflight_hi_on_congestion_signal() {
         let mut cfg = BbrConfig::default();
         cfg.bbrv2_experimental_inflight_hi_shrink = true;
         let mut bbr =
@@ -1521,8 +1510,8 @@ mod tests {
         bbr.on_end_acks(Instant::now(), 1_000_000, false, Some(1));
 
         assert_eq!(
-            bbr.inflight_hi, 700_000,
-            "experimental shrink applies Beta=0.7 to the congestion-signal inflight"
+            bbr.inflight_hi, 1_000_000,
+            "upper-bound adaptation must preserve the flight observed at send time"
         );
     }
 
@@ -1570,7 +1559,7 @@ mod tests {
         ack_round_bytes(&mut bbr, now, 100 * BASE_DATAGRAM_SIZE);
         bbr.on_end_acks(now, 1_000_000, false, Some(1));
 
-        assert_eq!(bbr.inflight_hi, 700_000);
+        assert_eq!(bbr.inflight_hi, 1_000_000);
         assert!(
             bbr.pacing_gain < 1.0,
             "a probing loss should immediately move ProbeBW back to DOWN"
@@ -1605,8 +1594,8 @@ mod tests {
         bbr.on_end_acks(now, 100_000, false, Some(11));
 
         assert_eq!(
-            bbr.inflight_hi, 630_000,
-            "BBRv2 should shrink from tx_in_flight at send time, not lower inflight at loss detection"
+            bbr.inflight_hi, 900_000,
+            "BBRv2 should preserve tx_in_flight at send time, not use lower inflight at loss detection"
         );
     }
 
@@ -1778,7 +1767,7 @@ mod tests {
     }
 
     #[test]
-    fn bbrv2_probe_up_raises_bw_hi_from_clean_latest_sample() {
+    fn bbrv2_probing_loss_does_not_install_long_term_bandwidth_cap() {
         let mut cfg = BbrConfig::default();
         cfg.bbrv2_experimental_inflight_hi_shrink = true;
         let mut bbr =
@@ -1786,14 +1775,14 @@ mod tests {
         bbr.mode = Mode::ProbeBw;
         bbr.probe_bw_phase = ProbeBwPhase::Up;
         bbr.pacing_gain = BBR2_PROBE_UP_PACING_GAIN;
-        bbr.cwnd = 128 * BASE_DATAGRAM_SIZE;
-        bbr.inflight_hi = bbr.cwnd;
-        bbr.bw_hi = 1_000;
-        bbr.bw_latest = 2_000;
+        bbr.bw_probe_samples = true;
+        bbr.max_bandwidth
+            .update_max_bandwidth(1, 100_000_000, false);
+        let bandwidth_before = bbr.bbrv2_effective_bandwidth();
 
-        bbr.bbrv2_probe_up_inflight_hi(bbr.cwnd, true, bbr.cwnd);
+        bbr.bbrv2_handle_congestion_signal(Instant::now(), 1_000_000, false);
 
-        assert_eq!(bbr.bw_hi, 2_000);
+        assert_eq!(bbr.bbrv2_effective_bandwidth(), bandwidth_before);
     }
 
     #[test]
@@ -1873,33 +1862,29 @@ mod tests {
         assert_eq!(v2.inflight_hi, u64::MAX);
     }
 
-    /// V2: shrinking from a congestion signal applies Beta=0.7 and floors at
-    /// the current BDP/min-cwnd floor so the long-term ceiling does not become
-    /// a starvation lever before the full BBRv2 lower-bound model exists.
+    /// V2 preserves the observed inflight-at-send and uses 70% of the modeled
+    /// target only as a floor, matching BBRv2 upper-bound adaptation.
     #[test]
-    fn bbrv2_shrink_inflight_hi_applies_beta_and_floors_at_bdp() {
+    fn bbrv2_inflight_hi_preserves_signal_and_uses_model_floor() {
         let cfg = Arc::new(BbrConfig::default());
         let mut bbr = Bbr::new_with_version(cfg, BASE_DATAGRAM_SIZE as u16, BbrVersion::V2);
 
-        // Large inflight at signal: expect 0.7× reduction.
+        // Large observed flight is retained rather than multiplied by beta.
         let signal_inflight = 1_000_000u64;
         bbr.shrink_inflight_hi_on_signal(signal_inflight);
         assert_eq!(
-            bbr.inflight_hi,
-            signal_inflight.saturating_mul(7) / 10,
-            "Beta=0.7 reduction on first signal"
+            bbr.inflight_hi, signal_inflight,
+            "the triggering flight must not be reduced a second time"
         );
 
-        // Subsequent smaller signal must not GROW the ceiling — shrink is
-        // monotonic in this slice (probe-up not implemented).
+        // A later lower observation can reduce the bound, but never below the
+        // model-derived safety floor.
         let smaller_signal = 300_000u64;
         bbr.shrink_inflight_hi_on_signal(smaller_signal);
-        assert!(
-            bbr.inflight_hi <= signal_inflight.saturating_mul(7) / 10,
-            "shrink-only, no growth without probe-up"
-        );
+        assert_eq!(bbr.inflight_hi, smaller_signal);
 
-        // Tiny signal: floor at the controller's current BDP/min-cwnd floor.
+        // Tiny signal: floor at 70% of the target or min_cwnd, whichever is
+        // larger.
         let mut bbr = Bbr::new_with_version(
             Arc::new(BbrConfig::default()),
             BASE_DATAGRAM_SIZE as u16,
@@ -1908,8 +1893,8 @@ mod tests {
         bbr.shrink_inflight_hi_on_signal(1);
         assert_eq!(
             bbr.inflight_hi,
-            bbr.bbrv2_inflight_hi_floor(),
-            "floor at BDP/min-cwnd when Beta-reduced signal would be smaller"
+            bbr.bbrv2_inflight_hi_loss_floor(),
+            "loss adaptation must retain its model-derived floor"
         );
     }
 

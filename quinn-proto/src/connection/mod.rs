@@ -1290,8 +1290,12 @@ impl Connection {
     /// Returns connection statistics
     pub fn stats(&self) -> ConnectionStats {
         let mut stats = self.stats;
+        let controller_metrics = self.path.congestion.metrics();
         stats.path.rtt = self.path.rtt.get();
-        stats.path.cwnd = self.path.congestion.window();
+        stats.path.cwnd = controller_metrics.congestion_window;
+        stats.path.ssthresh = controller_metrics.ssthresh;
+        stats.path.pacing_rate = controller_metrics.pacing_rate;
+        stats.path.send_quantum = controller_metrics.send_quantum;
         stats.path.current_mtu = self.path.mtud.current_mtu();
         stats.path.bytes_in_flight = self.path.in_flight.bytes;
         stats.path.packets_in_flight = self.path.in_flight.ack_eliciting;

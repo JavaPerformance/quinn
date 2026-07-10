@@ -139,6 +139,12 @@ pub struct PathStats {
     pub rtt: Duration,
     /// Current congestion window of the connection
     pub cwnd: u64,
+    /// Current slow-start threshold, when reported by the controller
+    pub ssthresh: Option<u64>,
+    /// Current controller pacing rate in bytes per second, when available
+    pub pacing_rate: Option<u64>,
+    /// Current controller send quantum in bytes, when available
+    pub send_quantum: Option<u64>,
     /// Congestion events on the connection
     pub congestion_events: u64,
     /// Spurious congestion events on the connection
