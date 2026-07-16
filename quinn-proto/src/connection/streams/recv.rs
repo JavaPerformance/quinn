@@ -266,11 +266,17 @@ impl<'a> Chunks<'a> {
             Entry::Vacant(_) => return Err(ReadableError::ClosedStream),
         };
 
-        let mut recv =
-            match get_or_insert_recv(entry.get_mut(), streams.stream_receive_window).stopped {
-                true => return Err(ReadableError::ClosedStream),
-                false => entry.remove().unwrap().into_inner(), // this can't fail due to the previous get_or_insert_with
-            };
+        // Upstream's two-argument form, with the initial window: a new stream
+        // starts there and grows later through max_stream_data.
+        let mut recv = match get_or_insert_recv(
+            entry.get_mut(),
+            streams.initial_stream_receive_window,
+        )
+        .stopped
+        {
+            true => return Err(ReadableError::ClosedStream),
+            false => entry.remove().unwrap().into_inner(), // this can't fail due to the previous get_or_insert_with
+        };
 
         recv.assembler.ensure_ordering(ordered)?;
         Ok(Self {
