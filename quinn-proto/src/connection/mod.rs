@@ -1462,10 +1462,17 @@ impl Connection {
     /// Increase the per-stream receive window at runtime.
     ///
     /// See [`TransportConfig::stream_receive_window()`]. QUIC cannot revoke previously advertised
-    /// `MAX_STREAM_DATA` limits, so values at or below the current window are ignored. Existing
-    /// streams observe an increased window on their next natural flow-control update.
+    /// `MAX_STREAM_DATA` limits, so values at or below the current window are ignored. Expansion
+    /// immediately queues updated limits for existing receive streams.
     pub fn set_stream_receive_window(&mut self, window: VarInt) -> bool {
-        self.streams.set_stream_receive_window(window.into())
+        let Some(streams) = self.streams.set_stream_receive_window(window.into()) else {
+            return false;
+        };
+        self.spaces[SpaceId::Data]
+            .pending
+            .max_stream_data
+            .extend(streams);
+        true
     }
 
     /// See [`TransportConfig::receive_window()`]
@@ -2893,8 +2900,16 @@ impl Connection {
                     self.read_crypto(SpaceId::Data, &frame, payload_len)?;
                 }
                 Frame::Stream(frame) => {
-                    if self.streams.received(frame, payload_len)?.should_transmit() {
+                    let id = frame.id;
+                    let (max_data, max_stream_data) = self.streams.received(frame, payload_len)?;
+                    if max_data.should_transmit() {
                         self.spaces[SpaceId::Data].pending.max_data = true;
+                    }
+                    if max_stream_data.should_transmit() {
+                        self.spaces[SpaceId::Data]
+                            .pending
+                            .max_stream_data
+                            .insert(id);
                     }
                 }
                 Frame::Ack(ack) => {

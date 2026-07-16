@@ -151,6 +151,12 @@ pub struct StreamsState {
     pub(super) send_window: u64,
     /// Configured upper bound for how much unacked data the peer can send us per stream
     pub(super) stream_receive_window: u64,
+    /// Per-stream receive credit advertised in our transport parameters.
+    ///
+    /// Runtime window expansion cannot change the transport parameters already sent to the peer,
+    /// so newly opened streams must start from this value and receive an explicit
+    /// `MAX_STREAM_DATA` update to reach `stream_receive_window`.
+    pub(super) initial_stream_receive_window: u64,
 
     // Pertinent state from the TransportParameters supplied by the peer
     initial_max_stream_data_uni: VarInt,
@@ -201,6 +207,7 @@ impl StreamsState {
             unacked_data: 0,
             send_window,
             stream_receive_window: stream_receive_window.into(),
+            initial_stream_receive_window: stream_receive_window.into(),
             initial_max_stream_data_uni: 0u32.into(),
             initial_max_stream_data_bidi_local: 0u32.into(),
             initial_max_stream_data_bidi_remote: 0u32.into(),
@@ -274,12 +281,13 @@ impl StreamsState {
 
     /// Process incoming stream frame
     ///
-    /// If successful, returns whether a `MAX_DATA` frame needs to be transmitted
+    /// If successful, returns whether `MAX_DATA` and `MAX_STREAM_DATA` frames need to be
+    /// transmitted, respectively.
     pub(crate) fn received(
         &mut self,
         frame: frame::Stream,
         payload_len: usize,
-    ) -> Result<ShouldTransmit, TransportError> {
+    ) -> Result<(ShouldTransmit, ShouldTransmit), TransportError> {
         let id = frame.id;
         self.validate_receive_id(id).inspect_err(|_| {
             debug!("received illegal STREAM frame");
@@ -288,15 +296,15 @@ impl StreamsState {
         let Some(rs) = self
             .recv
             .get_mut(&id)
-            .map(get_or_insert_recv(self.stream_receive_window))
+            .map(get_or_insert_recv(self.initial_stream_receive_window))
         else {
             trace!("dropping frame for closed stream");
-            return Ok(ShouldTransmit(false));
+            return Ok((ShouldTransmit(false), ShouldTransmit(false)));
         };
 
         if !rs.is_receiving() {
             trace!("dropping frame for finished stream");
-            return Ok(ShouldTransmit(false));
+            return Ok((ShouldTransmit(false), ShouldTransmit(false)));
         }
 
         let (new_bytes, closed) =
@@ -304,8 +312,9 @@ impl StreamsState {
         self.data_recvd = self.data_recvd.saturating_add(new_bytes);
 
         if !rs.stopped {
+            let (_, max_stream_data) = rs.max_stream_data(self.stream_receive_window);
             self.on_stream_frame(true, id);
-            return Ok(ShouldTransmit(false));
+            return Ok((ShouldTransmit(false), max_stream_data));
         }
 
         // Stopped streams become closed instantly on FIN, so check whether we need to clean up
@@ -315,7 +324,7 @@ impl StreamsState {
         }
 
         // We don't buffer data on stopped streams, so issue flow control credit immediately
-        Ok(self.add_read_credits(new_bytes))
+        Ok((self.add_read_credits(new_bytes), ShouldTransmit(false)))
     }
 
     /// Process incoming RESET_STREAM frame
@@ -338,7 +347,7 @@ impl StreamsState {
         let Some(rs) = self
             .recv
             .get_mut(&id)
-            .map(get_or_insert_recv(self.stream_receive_window))
+            .map(get_or_insert_recv(self.initial_stream_receive_window))
         else {
             trace!("received RESET_STREAM on closed stream");
             return Ok(ShouldTransmit(false));
@@ -928,18 +937,27 @@ impl StreamsState {
 
     /// Increase the receive window used for each stream.
     ///
-    /// The new value applies to streams opened after this call and to existing streams on their
-    /// next natural flow-control update. It does not immediately queue `MAX_STREAM_DATA` frames for
-    /// idle streams.
+    /// The new value applies to streams opened after this call. The returned stream IDs are
+    /// existing receive streams for which the caller must immediately queue `MAX_STREAM_DATA`.
     ///
     /// QUIC cannot revoke credit that was already advertised, so values at or below the current
-    /// window are ignored. Returns whether the window increased.
-    pub(crate) fn set_stream_receive_window(&mut self, window: u64) -> bool {
+    /// window are ignored. Returns `None` when the window did not increase.
+    pub(crate) fn set_stream_receive_window(&mut self, window: u64) -> Option<Vec<StreamId>> {
         if window <= self.stream_receive_window {
-            return false;
+            return None;
         }
         self.stream_receive_window = window;
-        true
+        Some(
+            self.recv
+                .iter()
+                .filter_map(|(&id, recv)| {
+                    recv.as_ref()
+                        .and_then(StreamRecv::as_open_recv)
+                        .is_some_and(Recv::can_send_flow_control)
+                        .then_some(id)
+                })
+                .collect(),
+        )
     }
 
     /// Return a point-in-time snapshot of connection-level flow control.
@@ -1018,7 +1036,8 @@ impl StreamsState {
     }
 
     pub(super) fn stream_recv_freed(&mut self, id: StreamId, recv: StreamRecv) {
-        self.free_recv.push(recv.free(self.stream_receive_window));
+        self.free_recv
+            .push(recv.free(self.initial_stream_receive_window));
         self.stream_freed(id, StreamHalf::Recv);
     }
 
@@ -1109,12 +1128,26 @@ mod tests {
         let mut state = make(Side::Client);
         let initial = state.stream_receive_window;
 
-        assert!(!state.set_stream_receive_window(initial));
-        assert!(!state.set_stream_receive_window(initial / 2));
+        assert!(state.set_stream_receive_window(initial).is_none());
+        assert!(state.set_stream_receive_window(initial / 2).is_none());
         assert_eq!(state.stream_receive_window, initial);
 
-        assert!(state.set_stream_receive_window(initial * 2));
+        assert!(state.set_stream_receive_window(initial * 2).is_some());
         assert_eq!(state.stream_receive_window, initial * 2);
+    }
+
+    #[test]
+    fn stream_receive_window_expansion_returns_open_streams_for_immediate_update() {
+        let mut state = make(Side::Client);
+        let id = StreamId::new(Side::Server, Dir::Bi, 0);
+        let initial = state.stream_receive_window;
+        let _ = get_or_insert_recv(initial)(state.recv.get_mut(&id).unwrap());
+
+        let streams = state
+            .set_stream_receive_window(initial * 2)
+            .expect("window should expand");
+
+        assert_eq!(streams, vec![id]);
     }
 
     #[test]
@@ -1142,7 +1175,7 @@ mod tests {
                     2048
                 )
                 .unwrap(),
-            ShouldTransmit(false)
+            (ShouldTransmit(false), ShouldTransmit(false))
         );
         assert_eq!(client.data_recvd, 2048);
         assert_eq!(client.local_max_data - initial_max, 0);
@@ -1183,7 +1216,7 @@ mod tests {
                     2048
                 )
                 .unwrap(),
-            ShouldTransmit(false)
+            (ShouldTransmit(false), ShouldTransmit(false))
         );
         assert_eq!(client.data_recvd, 2048);
         assert_eq!(client.local_max_data - initial_max, 0);
@@ -1246,7 +1279,7 @@ mod tests {
                     0
                 )
                 .unwrap(),
-            ShouldTransmit(false)
+            (ShouldTransmit(false), ShouldTransmit(false))
         );
         assert_eq!(client.data_recvd, 4096);
         assert_eq!(client.local_max_data - initial_max, 0);
@@ -1309,7 +1342,7 @@ mod tests {
                     32
                 )
                 .unwrap(),
-            ShouldTransmit(false)
+            (ShouldTransmit(false), ShouldTransmit(false))
         );
         assert_eq!(client.local_max_data, initial_max);
 
@@ -1341,7 +1374,7 @@ mod tests {
                     16
                 )
                 .unwrap(),
-            ShouldTransmit(false)
+            (ShouldTransmit(false), ShouldTransmit(false))
         );
         assert_eq!(client.local_max_data - initial_max, 48);
         assert!(!client.recv.contains_key(&id));
@@ -1364,7 +1397,7 @@ mod tests {
                     32
                 )
                 .unwrap(),
-            ShouldTransmit(false)
+            (ShouldTransmit(false), ShouldTransmit(false))
         );
 
         let mut pending = Retransmits::default();
@@ -1807,7 +1840,7 @@ mod tests {
                 },
                 0
             ),
-            Ok(ShouldTransmit(false))
+            Ok((ShouldTransmit(false), ShouldTransmit(false)))
         );
         // Try to open stream 128, exceeding limit
         assert_eq!(
@@ -1846,7 +1879,7 @@ mod tests {
                 },
                 0
             ),
-            Ok(ShouldTransmit(false))
+            Ok((ShouldTransmit(false), ShouldTransmit(false)))
         );
     }
 
@@ -1864,7 +1897,7 @@ mod tests {
                 },
                 0
             ),
-            Ok(ShouldTransmit(false))
+            Ok((ShouldTransmit(false), ShouldTransmit(false)))
         );
         // Try to open stream 128, exceeding limit
         assert_eq!(
@@ -1897,7 +1930,7 @@ mod tests {
                 },
                 0
             ),
-            Ok(ShouldTransmit(false))
+            Ok((ShouldTransmit(false), ShouldTransmit(false)))
         );
     }
 
@@ -1915,7 +1948,7 @@ mod tests {
                 },
                 0
             ),
-            Ok(ShouldTransmit(false))
+            Ok((ShouldTransmit(false), ShouldTransmit(false)))
         );
 
         // Tighten limit by one
@@ -1975,7 +2008,7 @@ mod tests {
                 },
                 0
             ),
-            Ok(ShouldTransmit(false))
+            Ok((ShouldTransmit(false), ShouldTransmit(false)))
         );
     }
 

@@ -794,6 +794,133 @@ async fn stream_id_flow_control() {
 }
 
 #[tokio::test]
+async fn runtime_stream_receive_window_expands_open_stream() {
+    let _guard = subscribe();
+    const INITIAL_WINDOW: u64 = 1024;
+    const EXPANDED_WINDOW: u64 = 64 * 1024;
+    const PAYLOAD_LEN: usize = 32 * 1024;
+
+    let mut cfg = TransportConfig::default();
+    cfg.receive_window(INITIAL_WINDOW.try_into().unwrap())
+        .stream_receive_window(INITIAL_WINDOW.try_into().unwrap());
+    let endpoint = endpoint_with_config(cfg);
+
+    let (client, server) = tokio::join!(
+        endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap(),
+        async { endpoint.accept().await.unwrap().await }
+    );
+    let client = client.unwrap();
+    let server = server.unwrap();
+
+    timeout(Duration::from_secs(2), async move {
+        let client_task = async move {
+            let (mut send, mut recv) = client.open_bi().await.unwrap();
+            send.write_all(&[0x42]).await.unwrap();
+
+            let mut ready = [0u8; 1];
+            recv.read_exact(&mut ready).await.unwrap();
+            assert_eq!(ready, [0x24]);
+
+            send.write_all(&vec![0xA5; PAYLOAD_LEN]).await.unwrap();
+            send.finish().unwrap();
+
+            let mut done = [0u8; 1];
+            recv.read_exact(&mut done).await.unwrap();
+            assert_eq!(done, [0x7E]);
+        };
+        let server_task = async move {
+            let (mut send, mut recv) = server.accept_bi().await.unwrap();
+            let mut request = [0u8; 1];
+            recv.read_exact(&mut request).await.unwrap();
+            assert_eq!(request, [0x42]);
+
+            server.set_receive_window(EXPANDED_WINDOW.try_into().unwrap());
+            assert!(server.set_stream_receive_window(EXPANDED_WINDOW.try_into().unwrap()));
+            send.write_all(&[0x24]).await.unwrap();
+
+            let payload = recv.read_to_end(PAYLOAD_LEN).await.unwrap();
+            assert_eq!(payload, vec![0xA5; PAYLOAD_LEN]);
+            send.write_all(&[0x7E]).await.unwrap();
+            send.finish().unwrap();
+            send.stopped().await.unwrap();
+        };
+
+        tokio::join!(client_task, server_task);
+    })
+    .await
+    .expect("runtime receive-window expansion should unblock the open stream");
+}
+
+#[tokio::test]
+async fn runtime_stream_receive_window_expands_stream_opened_after_prepare() {
+    let _guard = subscribe();
+    const INITIAL_WINDOW: u64 = 1024;
+    const EXPANDED_WINDOW: u64 = 64 * 1024;
+    const PAYLOAD_LEN: usize = 32 * 1024;
+
+    let mut cfg = TransportConfig::default();
+    cfg.receive_window(INITIAL_WINDOW.try_into().unwrap())
+        .stream_receive_window(INITIAL_WINDOW.try_into().unwrap());
+    let endpoint = endpoint_with_config(cfg);
+
+    let (client, server) = tokio::join!(
+        endpoint
+            .connect(endpoint.local_addr().unwrap(), "localhost")
+            .unwrap(),
+        async { endpoint.accept().await.unwrap().await }
+    );
+    let client = client.unwrap();
+    let server = server.unwrap();
+
+    timeout(Duration::from_secs(2), async move {
+        let client_task = async move {
+            let (mut prepare_send, mut prepare_recv) = client.open_bi().await.unwrap();
+            prepare_send.write_all(&[0x11]).await.unwrap();
+            prepare_send.finish().unwrap();
+            assert_eq!(prepare_recv.read_to_end(1).await.unwrap(), [0x12]);
+
+            let (mut data_send, mut data_recv) = client.open_bi().await.unwrap();
+            data_send.write_all(&[0x21]).await.unwrap();
+            let mut ready = [0u8; 1];
+            data_recv.read_exact(&mut ready).await.unwrap();
+            assert_eq!(ready, [0x22]);
+
+            data_send.write_all(&vec![0xA5; PAYLOAD_LEN]).await.unwrap();
+            data_send.finish().unwrap();
+            assert_eq!(data_recv.read_to_end(1).await.unwrap(), [0x23]);
+        };
+        let server_task = async move {
+            let (mut prepare_send, mut prepare_recv) = server.accept_bi().await.unwrap();
+            assert_eq!(prepare_recv.read_to_end(1).await.unwrap(), [0x11]);
+
+            server.set_receive_window(EXPANDED_WINDOW.try_into().unwrap());
+            assert!(server.set_stream_receive_window(EXPANDED_WINDOW.try_into().unwrap()));
+            prepare_send.write_all(&[0x12]).await.unwrap();
+            prepare_send.finish().unwrap();
+            prepare_send.stopped().await.unwrap();
+
+            let (mut data_send, mut data_recv) = server.accept_bi().await.unwrap();
+            let mut request = [0u8; 1];
+            data_recv.read_exact(&mut request).await.unwrap();
+            assert_eq!(request, [0x21]);
+            data_send.write_all(&[0x22]).await.unwrap();
+
+            let payload = data_recv.read_to_end(PAYLOAD_LEN).await.unwrap();
+            assert_eq!(payload, vec![0xA5; PAYLOAD_LEN]);
+            data_send.write_all(&[0x23]).await.unwrap();
+            data_send.finish().unwrap();
+            data_send.stopped().await.unwrap();
+        };
+
+        tokio::join!(client_task, server_task);
+    })
+    .await
+    .expect("runtime receive-window expansion should apply to post-prepare streams");
+}
+
+#[tokio::test]
 async fn two_datagram_readers() {
     let _guard = subscribe();
     let endpoint = endpoint();

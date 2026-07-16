@@ -718,7 +718,7 @@ impl Connection {
     ///
     /// See [`proto::TransportConfig::stream_receive_window()`]. QUIC cannot revoke previously
     /// advertised `MAX_STREAM_DATA` limits, so values at or below the current window are ignored.
-    /// Existing streams observe an increased window on their next natural flow-control update.
+    /// Expansion immediately queues updated limits for existing receive streams.
     /// Returns whether the window increased.
     pub fn set_stream_receive_window(&self, window: VarInt) -> bool {
         let mut conn = self.0.state.lock("set_stream_receive_window");
