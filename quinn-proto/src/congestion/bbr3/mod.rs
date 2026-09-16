@@ -1655,7 +1655,12 @@ impl Controller for Bbr3 {
         ControllerMetrics {
             congestion_window: self.window(),
             ssthresh: None,
-            pacing_rate: Some(self.pacing_rate.round() as u64),
+            // Zero means "no bandwidth sample yet", not a rate of zero bytes
+            // per second. A non-finite rate also saturates to zero here.
+            pacing_rate: {
+                let rate = self.pacing_rate.round() as u64;
+                (rate > 0).then_some(rate)
+            },
             send_quantum: Some(self.send_quantum),
         }
     }

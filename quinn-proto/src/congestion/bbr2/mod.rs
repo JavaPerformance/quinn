@@ -989,7 +989,10 @@ impl Controller for Bbr {
         ControllerMetrics {
             congestion_window: self.window(),
             ssthresh: None,
-            pacing_rate: Some(self.pacing_rate),
+            // Zero means "no bandwidth sample yet", not a rate of zero bytes
+            // per second. calculate_pacing_rate() returns early while the
+            // estimate is zero, leaving the field at its initial value.
+            pacing_rate: (self.pacing_rate > 0).then_some(self.pacing_rate),
             send_quantum: None,
         }
     }

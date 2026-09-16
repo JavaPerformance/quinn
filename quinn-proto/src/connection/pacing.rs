@@ -150,7 +150,16 @@ impl Pacer {
             self.tokens = self.capacity.min(self.tokens);
         }
 
-        if let Some(pacing_rate) = controller_metrics.pacing_rate {
+        // A controller that has not yet taken a bandwidth sample reports zero,
+        // which is not a rate: dividing by it yields an infinite delay, and
+        // Duration::from_secs_f64 panics on a non-finite value. That panic
+        // poisons the connection mutex and the process then aborts from
+        // RecvStream's destructor. Reached on a 1.77s RTT path, where the
+        // pre-sample window is long enough to queue more than one burst; a
+        // 171ms path exits it too quickly to hit the bytes_to_send > capacity
+        // branch. Treat zero as "no pacing rate" and fall through to the token
+        // bucket below, which is already bounded and correct.
+        if let Some(pacing_rate) = controller_metrics.pacing_rate.filter(|rate| *rate > 0) {
             // if the bytes to send are below or equal to our maximum burst size there is no need for delay
             if bytes_to_send <= self.capacity {
                 return None;
@@ -290,6 +299,33 @@ const MAX_BURST_SIZE: u64 = 256;
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn zero_pacing_rate_does_not_panic_or_stall() {
+        // A controller reports zero until its first bandwidth sample, and
+        // dividing by it produced an infinite Duration that aborted the
+        // process from a destructor. Zero must read as "no rate" instead.
+        let now = Instant::now();
+        let rtt = Duration::from_millis(1770);
+        let mut pacer = Pacer::new(rtt, 20_000, 1200, None, now);
+        let metrics = ControllerMetrics {
+            congestion_window: 20_000,
+            ssthresh: None,
+            pacing_rate: Some(0),
+            send_quantum: None,
+        };
+        // One window's worth still exceeds the burst capacity, which is the
+        // condition that reaches the divide. Before the fix this aborted the
+        // process; now it falls through to the token bucket, whose delay is
+        // window/rtt-paced and so on the order of one round trip.
+        let delay = pacer.delay(rtt, 20_000, 1200, 20_000, now, &metrics);
+        if let Some(at) = delay {
+            assert!(
+                at.duration_since(now) <= rtt * 10,
+                "zero pacing rate must fall through to the bounded token bucket"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]
