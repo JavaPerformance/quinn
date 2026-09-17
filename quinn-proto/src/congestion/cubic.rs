@@ -385,7 +385,7 @@ mod tests {
         // After ten days without a congestion event, w_cubic exceeds u64::MAX.
         // Before this fix, computing the window increment overflowed.
         let later = now + Duration::from_secs(10 * 24 * 60 * 60);
-        cubic.on_ack(later, later, BASE_DATAGRAM_SIZE, false, &rtt);
+        cubic.on_ack(later, later, BASE_DATAGRAM_SIZE, 0, false, &rtt);
 
         assert_eq!(cubic.state.window, window + BASE_DATAGRAM_SIZE);
     }

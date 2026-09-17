@@ -157,11 +157,17 @@ impl PathData {
             .clone()
             .build(now, config.get_initial_mtu());
         self.mtud.reset(config.get_initial_mtu(), config.min_mtu);
-        self.pacing = Pacer::new(
+        // Upstream resets through Pacer::new, which is test-only here because
+        // production carries our configurable burst settings. Rebuilding
+        // without them would silently drop max_pacing_burst_size and
+        // pacing_burst_interval_nanos on every path reset.
+        self.pacing = Pacer::new_with_burst_config(
             self.rtt.get(),
             self.congestion.initial_window(),
             self.current_mtu(),
             config.max_outgoing_bytes_per_second,
+            config.max_pacing_burst_size,
+            config.pacing_burst_interval_nanos,
             now,
         );
     }
@@ -501,11 +507,14 @@ mod tests {
         let mut path = PathData::new(remote, true, None, 0, now, &config);
         let mtu = path.current_mtu();
         let window = path.congestion.window();
+        // Our Pacer::delay takes controller metrics; upstream's test predates
+        // that argument.
+        let metrics = path.congestion.metrics();
 
         for _ in 0..1000 {
             if path
                 .pacing
-                .delay(path.rtt.get(), mtu.into(), mtu, window, now)
+                .delay(path.rtt.get(), mtu.into(), mtu, window, now, &metrics)
                 .is_some()
             {
                 break;
@@ -514,7 +523,7 @@ mod tests {
         }
         assert!(
             path.pacing
-                .delay(path.rtt.get(), mtu.into(), mtu, window, now)
+                .delay(path.rtt.get(), mtu.into(), mtu, window, now, &metrics)
                 .is_some()
         );
 
@@ -526,7 +535,8 @@ mod tests {
                 path.current_mtu().into(),
                 path.current_mtu(),
                 path.congestion.window(),
-                now
+                now,
+                &path.congestion.metrics(),
             ),
             None
         );

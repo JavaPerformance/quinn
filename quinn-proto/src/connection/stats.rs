@@ -176,8 +176,6 @@ pub struct PathStats {
     pub bytes_in_flight: u64,
     /// Number of ACK-eliciting packets currently in flight
     pub packets_in_flight: u64,
-    /// Minimum RTT observed on this path, ignoring ACK delay
-    pub min_rtt: Duration,
     /// Most recently observed RTT sample
     pub latest_rtt: Duration,
     /// Estimated RTT variance, computed as described in RFC 6298

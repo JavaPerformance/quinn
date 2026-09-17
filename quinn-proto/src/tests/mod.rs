@@ -226,9 +226,8 @@ fn stats_include_congestion_controller_bandwidth_estimate() {
             &mut self,
             _now: Instant,
             _sent: Instant,
+            _event: congestion::CongestionEvent,
             _is_persistent_congestion: bool,
-            _is_ecn: bool,
-            _lost_bytes: u64,
         ) {
         }
 

@@ -1662,6 +1662,14 @@ impl Controller for Bbr3 {
                 (rate > 0).then_some(rate)
             },
             send_quantum: Some(self.send_quantum),
+            // Upstream reports bandwidth_estimate in BITS per second
+            // (saturating_mul(8)); our pacing_rate stays BYTES per second
+            // because Pacer::delay divides a byte count by it. The two units
+            // differ deliberately -- do not "normalise" one to the other.
+            bandwidth_estimate: {
+                let bw = self.max_bw.round().max(0.0) as u64;
+                (bw != 0).then(|| bw.saturating_mul(8))
+            },
         }
     }
 

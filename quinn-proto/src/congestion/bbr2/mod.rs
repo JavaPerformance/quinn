@@ -986,6 +986,7 @@ impl Controller for Bbr {
     }
 
     fn metrics(&self) -> ControllerMetrics {
+        let bandwidth_estimate = self.max_bandwidth.get_estimate();
         ControllerMetrics {
             congestion_window: self.window(),
             ssthresh: None,
@@ -994,6 +995,12 @@ impl Controller for Bbr {
             // estimate is zero, leaving the field at its initial value.
             pacing_rate: (self.pacing_rate > 0).then_some(self.pacing_rate),
             send_quantum: None,
+            // Upstream reports bandwidth_estimate in BITS per second
+            // (saturating_mul(8)); our pacing_rate stays BYTES per second
+            // because Pacer::delay divides a byte count by it. The two units
+            // differ deliberately -- do not "normalise" one to the other.
+            bandwidth_estimate: (bandwidth_estimate != 0)
+                .then(|| bandwidth_estimate.saturating_mul(8)),
         }
     }
 

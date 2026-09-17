@@ -34,8 +34,13 @@ pub struct FlowControlStats {
     pub peer_max_data: u64,
     /// Sum of current offsets across all send streams
     pub data_sent: u64,
-    /// Total quantity of unacknowledged outgoing data
-    pub unacked_data: u64,
+    /// Total outgoing data retained in send buffers, acknowledged data included
+    ///
+    /// Upstream renamed StreamsState::unacked_data to buffered_data in
+    /// bf606080 and widened its meaning: it is retained buffer occupancy, not
+    /// unacknowledged bytes. This is the quantity that actually bounds the
+    /// send window, which is what consumers of this stat want.
+    pub buffered_data: u64,
     /// Configured upper bound for unacknowledged outgoing data
     pub send_window: u64,
     /// Bytes currently writable after applying peer credit and the local send window
@@ -1023,7 +1028,7 @@ impl StreamsState {
             streams_blocked_by_conn_fc: self.connection_blocked.len() as u64,
             peer_max_data: self.max_data,
             data_sent: self.data_sent,
-            unacked_data: self.unacked_data,
+            buffered_data: self.buffered_data,
             send_window: self.send_window,
             write_limit: self.write_limit(),
         }
@@ -1280,7 +1285,7 @@ mod tests {
         state.data_sent = 40;
         state.local_max_data = 200;
         state.data_recvd = 50;
-        state.unacked_data = 10;
+        state.buffered_data = 10;
         state.send_window = 80;
         state
             .connection_blocked
@@ -1294,7 +1299,7 @@ mod tests {
                 streams_blocked_by_conn_fc: 1,
                 peer_max_data: 100,
                 data_sent: 40,
-                unacked_data: 10,
+                buffered_data: 10,
                 send_window: 80,
                 write_limit: 60,
             }
@@ -1319,7 +1324,7 @@ mod tests {
         let mut state = make(Side::Client);
         let id = StreamId::new(Side::Server, Dir::Bi, 0);
         let initial = state.stream_receive_window;
-        let _ = get_or_insert_recv(initial)(state.recv.get_mut(&id).unwrap());
+        let _ = get_or_insert_recv(state.recv.get_mut(&id).unwrap(), initial);
 
         let streams = state
             .set_stream_receive_window(initial * 2)
@@ -1577,7 +1582,8 @@ mod tests {
                         32
                     )
                     .unwrap(),
-                ShouldTransmit(false)
+                // Our receive-window expansion returns a second signal here.
+                (ShouldTransmit(false), ShouldTransmit(false))
             );
 
             let mut pending = Retransmits::default();

@@ -258,7 +258,7 @@ impl<'a> SendStream<'a> {
                 0,
                 self.state.max_data,
                 self.state.data_sent,
-                self.state.unacked_data,
+                self.state.buffered_data,
                 self.state.send_window
             );
             if !stream.connection_blocked {

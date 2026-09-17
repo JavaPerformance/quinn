@@ -312,6 +312,7 @@ mod tests {
             ssthresh: None,
             pacing_rate: Some(0),
             send_quantum: None,
+            bandwidth_estimate: None,
         };
         // One window's worth still exceeds the burst capacity, which is the
         // condition that reaches the divide. Before the fix this aborted the
